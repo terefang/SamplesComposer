@@ -1,0 +1,6 @@
+
+  ./version.txt -- Version Information for samples-composer (syntax: Text)
+  [automatically generated and maintained by GNU shtool]
+
+  This is samples-composer, Version 2026.11.1 (19-Nov-2026)
+
