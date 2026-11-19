@@ -1591,7 +1591,7 @@ func (ui *synthUI) seekPlaybackRatio(ratio float64) {
 		}
 		ui.playByteOffset = targetFrame * bytesPerFrame
 		ui.playMu.Unlock()
-		ui.updatePlayerControlsUI()
+		ui.refreshPlayerUI(targetFrame, totFrames, sr, playing, paused)
 		return
 	}
 	ui.playMu.Unlock()
@@ -2317,7 +2317,7 @@ func (ui *synthUI) buildLayout() {
 
 	ui.window.SetContent(root)
 	ui.window.SetOnClosed(func() {
-		ui.closeMalgoDeviceLocked()
+		stopAndUninitDevice(ui.detachMalgoDevice())
 		if ui.malgoCtx != nil {
 			_ = ui.malgoCtx.Uninit()
 			ui.malgoCtx.Free()
