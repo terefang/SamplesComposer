@@ -7,10 +7,13 @@ CLI := "sc"
 OSARCH := os()+"-"+arch()
 
 ## GOARCHS := "linux,amd64 linux,arm64 windows,amd64 windows,arm64 darwin,amd64 darwin,arm64"
-GOARCHS := "linux,amd64 linux,arm64 darwin,amd64 darwin,arm64"
+GOARCHS := "linux,amd64"
 
 # GOROOT := "/u/fredo/bin/go/go1.26.7"
-GOROOT := "/u/fredo/bin/go/go1.27.4"
+GOROOT := "/u/fredo/go/go1.27.4"
+
+LXDPLY := "linuxdeploy-x86_64.AppImage"
+APPIMG := "appimagetool-x86_64.AppImage"
 
 add-mod _MOD:
     #!/bin/sh -x
@@ -97,12 +100,22 @@ make-rel-msg _MSG: set-drel git-push
 make-upload:
     #!/bin/bash
     VERSION=$(shtool version -l txt ./version.txt)
-    gh release upload v$VERSION {{XDIST}}/*
+    gh release upload v$VERSION {{XDIST}}/{{CLI}}*
 
-make-prel-full _MSG: (make-prel-msg _MSG) build-all make-upload
-make-rel-full _MSG: (make-rel-msg _MSG) build-all make-upload
+#make-prel-full _MSG: (make-prel-msg _MSG) build-all make-upload
+#make-rel-full _MSG: (make-rel-msg _MSG) build-all make-upload
+make-prel-full _MSG: (make-prel-msg _MSG) build make-upload
+make-rel-full _MSG: (make-rel-msg _MSG) build make-upload
 
 build: (build-osarch-out "linux" "amd64" CLI)
+    #!/bin/sh
+    rm -rf {{XDIST}}/AppDir; mkdir -p {{XDIST}}/AppDir
+    {{LXDPLY}} -v0 \
+        --appdir={{XDIST}}/AppDir \
+        -e{{XDIST}}/{{CLI}} \
+        --icon-file={{XDIR}}/sc.png \
+        --create-desktop-file
+    {{APPIMG}} {{XDIST}}/AppDir {{XDIST}}/{{CLI}}.AppImage
 
 build-all:
     #!/bin/sh
