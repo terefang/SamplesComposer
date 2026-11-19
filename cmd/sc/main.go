@@ -831,6 +831,8 @@ type synthUI struct {
 	playerTimeLabel    *widget.Label
 	playerBar          *fyne.Container
 	seekingUI          bool
+	loopPlayback       bool
+	playerLoopCheck    *widget.Check
 }
 
 // newSynthUI initializes defaults, loads XDG INI presets if present, and constructs all widgets.
@@ -1261,25 +1263,44 @@ func (ui *synthUI) startMalgoPlayback(sourceLabel string, samples []int16, sampl
 			if bytesNeeded > len(pOutputSample) {
 				bytesNeeded = len(pOutputSample)
 			}
+			// Align to full stereo frames so channel phase/order is preserved across loop boundaries.
+			bytesNeeded = (bytesNeeded / bytesPerFrame) * bytesPerFrame
+			if bytesNeeded <= 0 {
+				return
+			}
 
 			ui.playMu.Lock()
-			if !ui.isPlaying || ui.isPaused || ui.playByteOffset >= len(ui.playPCM) {
+			if !ui.isPlaying || ui.isPaused || len(ui.playPCM) < bytesPerFrame {
 				ui.playMu.Unlock()
 				clear(pOutputSample[:bytesNeeded])
 				return
 			}
 
-			remaining := len(ui.playPCM) - ui.playByteOffset
-			toCopy := bytesNeeded
-			if remaining < toCopy {
-				toCopy = remaining
+			written := 0
+			for written < bytesNeeded {
+				if ui.playByteOffset >= len(ui.playPCM) {
+					if !ui.loopPlayback {
+						break
+					}
+					ui.playByteOffset = 0
+				}
+				remaining := len(ui.playPCM) - ui.playByteOffset
+				toCopy := bytesNeeded - written
+				if remaining < toCopy {
+					toCopy = remaining
+				}
+				copy(pOutputSample[written:written+toCopy], ui.playPCM[ui.playByteOffset:ui.playByteOffset+toCopy])
+				ui.playByteOffset += toCopy
+				written += toCopy
 			}
-			copy(pOutputSample[:toCopy], ui.playPCM[ui.playByteOffset:ui.playByteOffset+toCopy])
-			ui.playByteOffset += toCopy
+			looping := ui.loopPlayback
+			if ui.playByteOffset >= len(ui.playPCM) && looping {
+				ui.playByteOffset = 0
+			}
 			ui.playMu.Unlock()
 
-			if toCopy < bytesNeeded {
-				clear(pOutputSample[toCopy:bytesNeeded])
+			if written < bytesNeeded {
+				clear(pOutputSample[written:bytesNeeded])
 			}
 		}
 
@@ -1337,7 +1358,8 @@ func (ui *synthUI) startMalgoPlayback(sourceLabel string, samples []int16, sampl
 				totFrames := ui.playTotalFrames
 				sr := ui.playSampleRate
 				paused := ui.isPaused
-				finished := ui.playByteOffset >= len(ui.playPCM)
+				looping := ui.loopPlayback
+				finished := !looping && ui.playByteOffset >= len(ui.playPCM)
 				ui.playMu.Unlock()
 
 				if finished {
@@ -1590,6 +1612,10 @@ func (ui *synthUI) seekPlaybackRatio(ratio float64) {
 			targetFrame = ui.playTotalFrames - 1
 		}
 		ui.playByteOffset = targetFrame * bytesPerFrame
+		totFrames := ui.playTotalFrames
+		sr := ui.playSampleRate
+		playing := ui.isPlaying
+		paused := ui.isPaused
 		ui.playMu.Unlock()
 		ui.refreshPlayerUI(targetFrame, totFrames, sr, playing, paused)
 		return
@@ -2169,9 +2195,20 @@ func (ui *synthUI) initWidgets() {
 		ui.seekPlaybackRatio(v)
 	}
 	ui.playerTimeLabel = widget.NewLabel("00:00.0 / 00:00.0")
+	ui.playerLoopCheck = widget.NewCheck("Loop", func(checked bool) {
+		ui.playMu.Lock()
+		ui.loopPlayback = checked
+		ui.playMu.Unlock()
+	})
+	ui.playerLoopCheck.SetChecked(ui.loopPlayback)
 	ui.playerBar = container.NewBorder(
 		nil, nil,
-		container.NewHBox(widget.NewLabelWithStyle("Player", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), ui.playerPlayPauseBtn, ui.playerStopBtn),
+		container.NewHBox(
+			widget.NewLabelWithStyle("Player", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+			ui.playerPlayPauseBtn,
+			ui.playerStopBtn,
+			ui.playerLoopCheck,
+		),
 		ui.playerTimeLabel,
 		container.NewVBox(ui.playerProgressBar, ui.playerSeekSlider),
 	)
