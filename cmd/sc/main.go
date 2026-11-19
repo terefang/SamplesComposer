@@ -11,9 +11,7 @@ import (
 	"math"
 	"math/cmplx"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -566,27 +564,6 @@ func SynthesizeParams(p SynthParams) ([]int16, error) {
 	return xaudio.RenderNote(cfg, env, p.SampleRate, note)
 }
 
-// SynthesizeSequence converts user-edited SequenceStep entries into xaudio.NoteEvent items
-// and mixes them via xaudio.RenderSequence.
-func SynthesizeSequence(p SynthParams, steps []SequenceStep) ([]int16, error) {
-	cfg := BuildUnisonConfig(p)
-	env := BuildADSR(p)
-
-	var events []xaudio.NoteEvent
-	for _, st := range steps {
-		events = append(events, xaudio.NoteEvent{
-			StartSec:    st.StartSec,
-			DurationSec: st.DurationSec,
-			Freq:        st.Freq,
-			Velocity:    st.Velocity,
-			Config:      &cfg,
-			Envelope:    &env,
-		})
-	}
-
-	return xaudio.RenderSequence(cfg, env, p.SampleRate, events)
-}
-
 // computeSpectrum performs an FFT on left-channel samples to yield normalized magnitudes [0.0, 1.0].
 func computeSpectrum(stereoSamples []int16, numBins int) []float64 {
 	fftSize := 1024
@@ -639,20 +616,6 @@ func computeSpectrum(stereoSamples []int16, numBins int) []float64 {
 		magnitudes[b] /= maxMag
 	}
 	return magnitudes
-}
-
-// playWavFile asynchronously executes the operating system's default audio player.
-func playWavFile(path string) {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("afplay", path)
-	case "windows":
-		cmd = exec.Command("powershell", "-c", fmt.Sprintf("(New-Object Media.SoundPlayer '%s').PlaySync()", path))
-	default:
-		cmd = exec.Command("aplay", path)
-	}
-	_ = cmd.Start()
 }
 
 // resolveEnvelopeCurve translates curve string selections into xaudio.EnvelopeCurve callbacks.
@@ -780,29 +743,22 @@ type synthUI struct {
 	wobbleDepthValLbl  *widget.Label
 
 	// Action buttons & metadata entries
-	playBtn        *widget.Button
-	playSeqBtn     *widget.Button
-	saveBtn        *widget.Button
-	resetBtn       *widget.Button
-	sortStepsBtn   *widget.Button
-	addStepBtn     *widget.Button
-	saveSeqMetaBtn *widget.Button
-	titleEntry     *widget.Entry
-	artistEntry    *widget.Entry
-	descEntry      *widget.Entry
+	playBtn     *widget.Button
+	playSeqBtn  *widget.Button
+	saveBtn     *widget.Button
+	resetBtn    *widget.Button
+	titleEntry  *widget.Entry
+	artistEntry *widget.Entry
+	descEntry   *widget.Entry
 
-	// Layout containers & independent accordions
-	stepRowsContainer *fyne.Container
-	seqContent        *fyne.Container
-	seqAccordion      *autoFitAccordion
-	metaContent       *fyne.Container
-	metaAccordion     *autoFitAccordion
-	colComposer       *fyne.Container
-	colUnison         *fyne.Container
-	colADSR           *fyne.Container
-	topBar            *fyne.Container
-	topBarLine1       *fyne.Container
-	topBarLine2       *fyne.Container
+	metaContent   *fyne.Container
+	metaAccordion *autoFitAccordion
+	colComposer   *fyne.Container
+	colUnison     *fyne.Container
+	colADSR       *fyne.Container
+	topBar        *fyne.Container
+	topBarLine1   *fyne.Container
+	topBarLine2   *fyne.Container
 
 	vizRateMu     sync.Mutex
 	vizLastRender time.Time
@@ -1119,7 +1075,6 @@ func (ui *synthUI) resetAllToDefaults() {
 		ui.presetCombo.SetText("")
 	}
 	ui.applyParamsToControls(defaultSynthParams())
-	ui.rebuildTimelineEditor()
 	ui.regenerateNote()
 	ui.fitWindowToContent()
 	ui.statusLabel.SetText("Reset all synthesizer parameters and timeline steps to defaults")
@@ -1614,94 +1569,6 @@ func (ui *synthUI) regenerateNote() {
 	ui.requestVisualizationRedraw()
 }
 
-// regenerateSequence renders the timeline steps via SynthesizeSequence and redraws the visualization.
-func (ui *synthUI) regenerateSequence() {
-	seqSamples, err := SynthesizeSequence(ui.params, ui.steps)
-	if err != nil {
-		ui.statusLabel.SetText("Sequence error: " + err.Error())
-		return
-	}
-	ui.currentSample = seqSamples
-	ui.syncPlaybackWithRenderedSamples("Sequence", seqSamples, ui.params.SampleRate)
-	ui.statusLabel.SetText(fmt.Sprintf("Rendered sequence (%d steps, %d stereo frames)", len(ui.steps), len(seqSamples)/2))
-	ui.requestVisualizationRedraw()
-}
-
-// buildStepRow creates a single timeline step row with full-width sliders and a Remove button.
-func (ui *synthUI) buildStepRow(idx int) *fyne.Container {
-	st := &ui.steps[idx]
-
-	startLbl := widget.NewLabel(fmt.Sprintf("%.2fs", st.StartSec))
-	startSlider := widget.NewSlider(0.0, 8.0)
-	startSlider.Step = 0.05
-	startSlider.SetValue(st.StartSec)
-
-	freqLbl := widget.NewLabel(fmt.Sprintf("%.1f Hz", st.Freq))
-	freqSlider := widget.NewSlider(30.0, 880.0)
-	freqSlider.Step = 1.0
-	freqSlider.SetValue(st.Freq)
-
-	durLbl := widget.NewLabel(fmt.Sprintf("%.2fs", st.DurationSec))
-	durSlider := widget.NewSlider(0.05, 3.0)
-	durSlider.Step = 0.05
-	durSlider.SetValue(st.DurationSec)
-
-	velLbl := widget.NewLabel(fmt.Sprintf("%.2f", st.Velocity))
-	velSlider := widget.NewSlider(0.05, 1.0)
-	velSlider.Step = 0.05
-	velSlider.SetValue(st.Velocity)
-
-	startSlider.OnChanged = func(v float64) {
-		st.StartSec = v
-		startLbl.SetText(fmt.Sprintf("%.2fs", v))
-		ui.regenerateSequence()
-	}
-	freqSlider.OnChanged = func(v float64) {
-		st.Freq = v
-		freqLbl.SetText(fmt.Sprintf("%.1f Hz", v))
-		ui.regenerateSequence()
-	}
-	durSlider.OnChanged = func(v float64) {
-		st.DurationSec = v
-		durLbl.SetText(fmt.Sprintf("%.2fs", v))
-		ui.regenerateSequence()
-	}
-	velSlider.OnChanged = func(v float64) {
-		st.Velocity = v
-		velLbl.SetText(fmt.Sprintf("%.2f", v))
-		ui.regenerateSequence()
-	}
-
-	removeBtn := widget.NewButton("Remove", func() {
-		if len(ui.steps) <= 1 {
-			ui.statusLabel.SetText("Sequence must contain at least 1 step")
-			return
-		}
-		ui.steps = append(ui.steps[:idx], ui.steps[idx+1:]...)
-		ui.rebuildTimelineEditor()
-		ui.regenerateSequence()
-		ui.fitWindowToContent()
-	})
-
-	slidersGrid := container.NewGridWithColumns(4,
-		makeParameterRow(fmt.Sprintf("Step %d Start", idx+1), startSlider, startLbl),
-		makeParameterRow("Freq", freqSlider, freqLbl),
-		makeParameterRow("Duration", durSlider, durLbl),
-		makeParameterRow("Velocity", velSlider, velLbl),
-	)
-
-	return container.NewBorder(nil, nil, nil, removeBtn, slidersGrid)
-}
-
-// rebuildTimelineEditor refreshes all rows inside stepRowsContainer.
-func (ui *synthUI) rebuildTimelineEditor() {
-	ui.stepRowsContainer.Objects = nil
-	for i := range ui.steps {
-		ui.stepRowsContainer.Add(ui.buildStepRow(i))
-	}
-	ui.stepRowsContainer.Refresh()
-}
-
 // initWidgets instantiates all interactive controls on synthUI.
 func (ui *synthUI) initWidgets() {
 	ui.statusLabel = widget.NewLabel("Ready")
@@ -2030,64 +1897,10 @@ func (ui *synthUI) initWidgets() {
 	ui.descEntry = widget.NewEntry()
 	ui.descEntry.SetText("Generated with gommons xaudio RenderSequence")
 
-	ui.stepRowsContainer = container.NewVBox()
-	ui.sortStepsBtn = widget.NewButton("Sort by StartSec", func() {
-		sort.SliceStable(ui.steps, func(i, j int) bool {
-			return ui.steps[i].StartSec < ui.steps[j].StartSec
-		})
-		ui.rebuildTimelineEditor()
-		ui.statusLabel.SetText("Sorted sequence steps chronologically by StartSec")
-		ui.regenerateSequence()
-	})
-
-	ui.addStepBtn = widget.NewButton("+ Add Step", func() {
-		nextStart := 0.0
-		nextFreq := ui.params.Tune
-		if len(ui.steps) > 0 {
-			last := ui.steps[len(ui.steps)-1]
-			nextStart = math.Min(8.0, last.StartSec+0.5)
-			nextFreq = math.Min(880.0, last.Freq*1.122)
-		}
-		ui.steps = append(ui.steps, SequenceStep{
-			StartSec:    nextStart,
-			Freq:        nextFreq,
-			DurationSec: 0.45,
-			Velocity:    0.85,
-		})
-		ui.rebuildTimelineEditor()
-		ui.regenerateSequence()
-		ui.fitWindowToContent()
-	})
-
-	ui.saveSeqMetaBtn = widget.NewButton("Save Sequence WAV", func() {
-		ui.regenerateSequence()
-		meta := xaudio.WavMetadata{
-			Title:       ui.titleEntry.Text,
-			Artist:      ui.artistEntry.Text,
-			Description: ui.descEntry.Text,
-			Software:    "gommons xaudio Fyne Synth",
-			Date:        "2026-11-19",
-		}
-		outFile := "sequence_timeline_output.wav"
-		if err := xaudio.WriteWavWithMetadata(outFile, ui.params.SampleRate, 2, ui.currentSample, meta); err != nil {
-			ui.statusLabel.SetText("Sequence WAV save error: " + err.Error())
-			return
-		}
-		ui.statusLabel.SetText("Saved rendered sequence to " + outFile + " with RIFF INFO metadata")
-	})
-
-	ui.rebuildTimelineEditor()
-
 	ui.playBtn = widget.NewButton("Play Note", func() {
 		ui.regenerateNote()
 		ui.startMalgoPlayback("Note", ui.currentSample, ui.params.SampleRate, 0)
 		ui.statusLabel.SetText("Playing synthesized note via malgo")
-	})
-
-	ui.playSeqBtn = widget.NewButton("Play Sequence", func() {
-		ui.regenerateSequence()
-		ui.startMalgoPlayback("Sequence", ui.currentSample, ui.params.SampleRate, 0)
-		ui.statusLabel.SetText("Playing timeline sequence via malgo")
 	})
 
 	ui.saveBtn = widget.NewButton("Save WAV with Metadata", func() {
@@ -2269,23 +2082,6 @@ func (ui *synthUI) buildLayout() {
 		makeParameterRow("Wobble Depth", ui.wobbleDepthSlider, ui.wobbleDepthValLbl),
 	)
 
-	// Standalone Sequence accordion that auto-fits the window when opened or closed
-	ui.seqContent = container.NewVBox(
-		container.NewHBox(
-			layout.NewSpacer(),
-			ui.sortStepsBtn,
-			ui.addStepBtn,
-			ui.saveSeqMetaBtn,
-		),
-		ui.stepRowsContainer,
-	)
-	ui.seqAccordion = newAutoFitAccordion(
-		func() { ui.fitWindowToContent() },
-		"Sequence",
-		ui.seqContent,
-	)
-	ui.seqAccordion.Open(0)
-
 	// Standalone Meta-Data accordion that auto-fits the window when opened or closed
 	ui.metaContent = container.NewVBox(
 		makeParameterRow("Title (INAM)", ui.titleEntry, nil),
@@ -2350,7 +2146,6 @@ func (ui *synthUI) buildLayout() {
 		container.NewVBox(
 			ui.topBar,
 			container.NewGridWithColumns(3, ui.colComposer, ui.colUnison, ui.colADSR),
-			ui.seqAccordion,
 			ui.metaAccordion,
 		),
 		bottomBar, nil, nil,
