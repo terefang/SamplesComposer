@@ -100,12 +100,12 @@ make-rel-msg _MSG: set-drel git-push
 make-upload:
     #!/bin/bash
     VERSION=$(shtool version -l txt ./version.txt)
-    gh release upload v$VERSION {{XDIST}}/{{CLI}}*
+    gh release upload v$VERSION {{XDIST}}/{{CLI}}* {{XDIST}}/{{EXE}}-$VERSION-windows-amd64.exe
 
 #make-prel-full _MSG: (make-prel-msg _MSG) build-all make-upload
 #make-rel-full _MSG: (make-rel-msg _MSG) build-all make-upload
-make-prel-full _MSG: (make-prel-msg _MSG) build make-upload
-make-rel-full _MSG: (make-rel-msg _MSG) build make-upload
+make-prel-full _MSG: (make-prel-msg _MSG) build build-win make-upload
+make-rel-full _MSG: (make-rel-msg _MSG) build build-win make-upload
 
 build: (build-osarch-out "linux" "amd64" CLI)
     #!/bin/sh
@@ -114,7 +114,20 @@ build: (build-osarch-out "linux" "amd64" CLI)
         --appdir={{XDIST}}/AppDir \
         -e{{XDIST}}/{{CLI}} \
         --icon-file={{XDIR}}/sc.png \
-        --create-desktop-file
+        --create-desktop-file \
+        --library=/lib/x86_64-linux-gnu/libm.so.6 \
+        --library=/lib/x86_64-linux-gnu/libwayland-client.so.0 \
+        --library=/lib/x86_64-linux-gnu/libGL.so.1 \
+        --library=/lib/x86_64-linux-gnu/libc.so.6 \
+        --library=/lib/x86_64-linux-gnu/libffi.so.8 \
+        --library=/lib/x86_64-linux-gnu/libGLdispatch.so.0 \
+        --library=/lib/x86_64-linux-gnu/libGLX.so.0 \
+        --library=/lib/x86_64-linux-gnu/libX11.so.6 \
+        --library=/lib/x86_64-linux-gnu/libxcb.so.1 \
+        --library=/lib/x86_64-linux-gnu/libXau.so.6 \
+        --library=/lib/x86_64-linux-gnu/libXdmcp.so.6 \
+        --library=/lib/x86_64-linux-gnu/libbsd.so.0 \
+        --library=/lib/x86_64-linux-gnu/libmd.so.0
     {{APPIMG}} {{XDIST}}/AppDir {{XDIST}}/{{CLI}}.AppImage
 
 build-all:
@@ -157,3 +170,36 @@ build-osarch-out _GOS _GARCH _GOUT: update-version-info
     echo "building ${_gos} ${_garch} ... ${_gout}"
     GOOS=${_gos} GOARCH=${_garch} go build -buildmode=pie -o "{{XDIST}}/${_gout}" -v cmd/{{CLI}}/*.go
 
+build-win: update-version-info
+    #!/bin/sh -x
+    export GOROOT={{GOROOT}}
+    export PATH=$GOROOT/bin:$PATH
+    mkdir -p {{XDIST}}
+    VERSION=$(shtool version -l txt ./version.txt)
+    fyne-cross windows \
+      -app-id terefang.sc \
+      -app-version $VERSION \
+      -arch amd64 \
+      -dir {{XDIR}} \
+      -icon Icon.png \
+      -name "{{EXE}}" \
+      -output "{{EXE}}-$VERSION" \
+      cmd/sc
+    cp {{XDIR}}/fyne-cross/bin/windows-amd64/{{EXE}}-$VERSION.exe {{XDIST}}/{{EXE}}-$VERSION-windows-amd64.exe
+
+build-mac: update-version-info
+    #!/bin/sh -x
+    export GOROOT={{GOROOT}}
+    export PATH=$GOROOT/bin:$PATH
+    mkdir -p {{XDIST}}
+    VERSION=$(shtool version -l txt ./version.txt)
+    fyne-cross darwin \
+      -app-id terefang.sc \
+      -app-version $VERSION \
+      -arch arm64 \
+      -dir {{XDIR}} \
+      -icon Icon.png \
+      -name "{{EXE}}" \
+      -output "{{EXE}}-$VERSION" \
+      cmd/sc
+    cp {{XDIR}}/fyne-cross/bin/darwin-arm64/{{EXE}}-$VERSION {{XDIST}}/{{EXE}}-$VERSION-darwin-arm64
