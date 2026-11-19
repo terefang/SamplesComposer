@@ -744,7 +744,6 @@ type synthUI struct {
 
 	// Action buttons & metadata entries
 	playBtn     *widget.Button
-	playSeqBtn  *widget.Button
 	saveBtn     *widget.Button
 	resetBtn    *widget.Button
 	titleEntry  *widget.Entry
@@ -2128,7 +2127,6 @@ func (ui *synthUI) buildLayout() {
 		ui.resetBtn,
 		container.NewHBox(
 			ui.playBtn,
-			ui.playSeqBtn,
 			ui.saveBtn,
 		),
 	)
