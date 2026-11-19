@@ -5,6 +5,7 @@ package main
 import (
 	"SamplesComposer/pkg"
 	"bufio"
+	"encoding/binary"
 	"fmt"
 	"image/color"
 	"math"
@@ -18,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gen2brain/malgo"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -805,6 +808,29 @@ type synthUI struct {
 	vizLastRender time.Time
 	vizPending    bool
 	vizTimer      *time.Timer
+
+	// Audio player state & progress tracker (malgo)
+	malgoCtx        *malgo.AllocatedContext
+	malgoDev        *malgo.Device
+	playMu          sync.Mutex
+	playPCM         []byte // Little-endian 16-bit stereo PCM buffer
+	playByteOffset  int    // Current read cursor in playPCM (aligned to 4 bytes per stereo frame)
+	playTotalFrames int
+	playSampleRate  int
+	playSource      string // "Note" or "Sequence"
+	isPlaying       bool
+	isPaused        bool
+	playTicker      *time.Ticker
+	playStopCh      chan struct{}
+
+	// Player UI widgets
+	playerPlayPauseBtn *widget.Button
+	playerStopBtn      *widget.Button
+	playerProgressBar  *widget.ProgressBar
+	playerSeekSlider   *widget.Slider
+	playerTimeLabel    *widget.Label
+	playerBar          *fyne.Container
+	seekingUI          bool
 }
 
 // newSynthUI initializes defaults, loads XDG INI presets if present, and constructs all widgets.
@@ -1142,6 +1168,198 @@ func (ui *synthUI) requestVisualizationRedraw() {
 	ui.vizRateMu.Unlock()
 }
 
+// detachMalgoDevice atomically clears playback state under playMu and returns the
+// active device so Stop()/Uninit() can be called OUTSIDE playMu (preventing audio-thread deadlock).
+func (ui *synthUI) detachMalgoDevice() *malgo.Device {
+	ui.playMu.Lock()
+	if ui.playStopCh != nil {
+		close(ui.playStopCh)
+		ui.playStopCh = nil
+	}
+	if ui.playTicker != nil {
+		ui.playTicker.Stop()
+		ui.playTicker = nil
+	}
+	dev := ui.malgoDev
+	ui.malgoDev = nil
+	ui.isPlaying = false
+	ui.isPaused = false
+	ui.playMu.Unlock()
+	return dev
+}
+
+func stopAndUninitDevice(dev *malgo.Device) {
+	if dev != nil {
+		_ = dev.Stop()
+		dev.Uninit()
+	}
+}
+
+// startMalgoPlayback streams samples through malgo starting at startFrame without blocking the UI thread.
+func (ui *synthUI) startMalgoPlayback(sourceLabel string, samples []int16, sampleRate int, startFrame int) {
+	if len(samples) < 2 || sampleRate <= 0 {
+		ui.statusLabel.SetText("No rendered audio samples to play")
+		return
+	}
+
+	// Copy samples snapshot so concurrent synth parameter edits don't race with playback.
+	pcmCopy := samplesToPCMBytes(samples)
+	totalFrames := len(samples) / 2
+	if startFrame < 0 || startFrame >= totalFrames {
+		startFrame = 0
+	}
+
+	go func() {
+		// 1. Stop any previous device OUTSIDE playMu so onSamples can never deadlock.
+		stopAndUninitDevice(ui.detachMalgoDevice())
+
+		// 2. Initialize malgo context OUTSIDE playMu.
+		ui.playMu.Lock()
+		ctx := ui.malgoCtx
+		ui.playMu.Unlock()
+
+		if ctx == nil {
+			newCtx, err := malgo.InitContext(nil, malgo.ContextConfig{}, nil)
+			if err != nil {
+				fyne.Do(func() {
+					ui.statusLabel.SetText("malgo context error: " + err.Error())
+				})
+				return
+			}
+			ui.playMu.Lock()
+			if ui.malgoCtx == nil {
+				ui.malgoCtx = newCtx
+				ctx = newCtx
+			} else {
+				ctx = ui.malgoCtx
+				_ = newCtx.Uninit()
+				newCtx.Free()
+			}
+			ui.playMu.Unlock()
+		}
+
+		const bytesPerFrame = 4 // 2 channels * 2 bytes (int16)
+
+		ui.playMu.Lock()
+		ui.playPCM = pcmCopy
+		ui.playByteOffset = startFrame * bytesPerFrame
+		ui.playTotalFrames = totalFrames
+		ui.playSampleRate = sampleRate
+		ui.playSource = sourceLabel
+		ui.isPlaying = true
+		ui.isPaused = false
+		ui.playMu.Unlock()
+
+		deviceConfig := malgo.DefaultDeviceConfig(malgo.Playback)
+		deviceConfig.Playback.Format = malgo.FormatS16
+		deviceConfig.Playback.Channels = 2
+		deviceConfig.SampleRate = uint32(sampleRate)
+		deviceConfig.Alsa.NoMMap = 1
+
+		onSamples := func(pOutputSample, pInputSamples []byte, framecount uint32) {
+			bytesNeeded := int(framecount) * bytesPerFrame
+			if bytesNeeded > len(pOutputSample) {
+				bytesNeeded = len(pOutputSample)
+			}
+
+			ui.playMu.Lock()
+			if !ui.isPlaying || ui.isPaused || ui.playByteOffset >= len(ui.playPCM) {
+				ui.playMu.Unlock()
+				clear(pOutputSample[:bytesNeeded])
+				return
+			}
+
+			remaining := len(ui.playPCM) - ui.playByteOffset
+			toCopy := bytesNeeded
+			if remaining < toCopy {
+				toCopy = remaining
+			}
+			copy(pOutputSample[:toCopy], ui.playPCM[ui.playByteOffset:ui.playByteOffset+toCopy])
+			ui.playByteOffset += toCopy
+			ui.playMu.Unlock()
+
+			if toCopy < bytesNeeded {
+				clear(pOutputSample[toCopy:bytesNeeded])
+			}
+		}
+
+		// 3. Init and Start device OUTSIDE playMu.
+		dev, err := malgo.InitDevice(ctx.Context, deviceConfig, malgo.DeviceCallbacks{
+			Data: onSamples,
+		})
+		if err != nil {
+			ui.playMu.Lock()
+			ui.isPlaying = false
+			ui.playMu.Unlock()
+			fyne.Do(func() {
+				ui.statusLabel.SetText("malgo device init error: " + err.Error())
+			})
+			return
+		}
+
+		if err := dev.Start(); err != nil {
+			dev.Uninit()
+			ui.playMu.Lock()
+			ui.isPlaying = false
+			ui.playMu.Unlock()
+			fyne.Do(func() {
+				ui.statusLabel.SetText("malgo start error: " + err.Error())
+			})
+			return
+		}
+
+		stopCh := make(chan struct{})
+		ticker := time.NewTicker(80 * time.Millisecond)
+
+		ui.playMu.Lock()
+		ui.malgoDev = dev
+		ui.playStopCh = stopCh
+		ui.playTicker = ticker
+		ui.playMu.Unlock()
+
+		fyne.Do(func() {
+			ui.refreshPlayerUI(startFrame, totalFrames, sampleRate, true, false)
+		})
+
+		// 4. Progress tracker loop.
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-ticker.C:
+				ui.playMu.Lock()
+				if !ui.isPlaying || ui.malgoDev != dev {
+					ui.playMu.Unlock()
+					return
+				}
+				curFrames := ui.playByteOffset / bytesPerFrame
+				totFrames := ui.playTotalFrames
+				sr := ui.playSampleRate
+				paused := ui.isPaused
+				finished := ui.playByteOffset >= len(ui.playPCM)
+				ui.playMu.Unlock()
+
+				if finished {
+					stopAndUninitDevice(ui.detachMalgoDevice())
+					ui.playMu.Lock()
+					ui.playByteOffset = totFrames * bytesPerFrame
+					ui.playMu.Unlock()
+					fyne.Do(func() {
+						ui.refreshPlayerUI(totFrames, totFrames, sr, false, false)
+						ui.statusLabel.SetText("Finished playing " + sourceLabel)
+					})
+					return
+				}
+
+				fyne.Do(func() {
+					ui.refreshPlayerUI(curFrames, totFrames, sr, true, paused)
+				})
+			}
+		}
+	}()
+}
+
 // redrawVisualization updates the waveform or FFT spectrum canvas using the current container width.
 func (ui *synthUI) redrawVisualization() {
 	ui.vizBg.FillColor = color.RGBA{R: 18, G: 20, B: 26, A: 255}
@@ -1215,6 +1433,217 @@ func (ui *synthUI) redrawVisualization() {
 		}
 	}
 	ui.vizContainer.Refresh()
+}
+
+func samplesToPCMBytes(samples []int16) []byte {
+	buf := make([]byte, len(samples)*2)
+	for i, s := range samples {
+		binary.LittleEndian.PutUint16(buf[i*2:i*2+2], uint16(s))
+	}
+	return buf
+}
+
+func formatSeconds(sec float64) string {
+	if sec < 0 {
+		sec = 0
+	}
+	mins := int(sec) / 60
+	rem := sec - float64(mins*60)
+	return fmt.Sprintf("%02d:%04.1f", mins, rem)
+}
+
+func (ui *synthUI) ensureMalgoContext() error {
+	if ui.malgoCtx != nil {
+		return nil
+	}
+	ctx, err := malgo.InitContext(nil, malgo.ContextConfig{}, nil)
+	if err != nil {
+		return err
+	}
+	ui.malgoCtx = ctx
+	return nil
+}
+
+// closeMalgoDeviceLocked stops and uninitializes any active malgo playback device.
+func (ui *synthUI) closeMalgoDeviceLocked() {
+	if ui.playStopCh != nil {
+		close(ui.playStopCh)
+		ui.playStopCh = nil
+	}
+	if ui.playTicker != nil {
+		ui.playTicker.Stop()
+		ui.playTicker = nil
+	}
+	if ui.malgoDev != nil {
+		_ = ui.malgoDev.Stop()
+		ui.malgoDev.Uninit()
+		ui.malgoDev = nil
+	}
+	ui.isPlaying = false
+	ui.isPaused = false
+}
+
+func (ui *synthUI) togglePlayPause() {
+	ui.playMu.Lock()
+	dev := ui.malgoDev
+	playing := ui.isPlaying
+	paused := ui.isPaused
+	curFrames := ui.playByteOffset / 4
+	totFrames := ui.playTotalFrames
+	sr := ui.playSampleRate
+	src := ui.playSource
+	ui.playMu.Unlock()
+
+	if dev != nil && playing {
+		if paused {
+			go func() {
+				_ = dev.Start()
+				ui.playMu.Lock()
+				ui.isPaused = false
+				ui.playMu.Unlock()
+				fyne.Do(func() {
+					ui.refreshPlayerUI(curFrames, totFrames, sr, true, false)
+					ui.statusLabel.SetText("Resumed playback")
+				})
+			}()
+			return
+		}
+		go func() {
+			_ = dev.Stop()
+			ui.playMu.Lock()
+			ui.isPaused = true
+			ui.playMu.Unlock()
+			fyne.Do(func() {
+				ui.refreshPlayerUI(curFrames, totFrames, sr, true, true)
+				ui.statusLabel.SetText("Paused playback")
+			})
+		}()
+		return
+	}
+
+	if src == "" {
+		src = "Note"
+	}
+	if len(ui.currentSample) == 0 {
+		ui.regenerateNote()
+	}
+	ui.startMalgoPlayback(src, ui.currentSample, ui.params.SampleRate, 0)
+}
+
+// refreshPlayerUI updates Fyne widgets using pre-snapshotted values without acquiring playMu.
+func (ui *synthUI) refreshPlayerUI(curFrames, totalFrames, sr int, playing, paused bool) {
+	if ui.playerProgressBar == nil || ui.playerTimeLabel == nil || ui.playerPlayPauseBtn == nil {
+		return
+	}
+	if totalFrames == 0 && len(ui.currentSample) >= 2 {
+		totalFrames = len(ui.currentSample) / 2
+		sr = ui.params.SampleRate
+	}
+	var posSec, totalSec, ratio float64
+	if sr > 0 && totalFrames > 0 {
+		posSec = float64(curFrames) / float64(sr)
+		totalSec = float64(totalFrames) / float64(sr)
+		ratio = math.Min(1.0, math.Max(0.0, float64(curFrames)/float64(totalFrames)))
+	}
+	ui.playerProgressBar.SetValue(ratio)
+	if ui.playerSeekSlider != nil {
+		ui.seekingUI = true
+		ui.playerSeekSlider.SetValue(ratio)
+		ui.seekingUI = false
+	}
+	ui.playerTimeLabel.SetText(fmt.Sprintf("%s / %s", formatSeconds(posSec), formatSeconds(totalSec)))
+	if playing && !paused {
+		ui.playerPlayPauseBtn.SetText("Pause")
+	} else {
+		ui.playerPlayPauseBtn.SetText("Play")
+	}
+}
+
+func (ui *synthUI) stopPlayback() {
+	go func() {
+		stopAndUninitDevice(ui.detachMalgoDevice())
+		ui.playMu.Lock()
+		ui.playByteOffset = 0
+		totFrames := ui.playTotalFrames
+		sr := ui.playSampleRate
+		ui.playMu.Unlock()
+		fyne.Do(func() {
+			ui.refreshPlayerUI(0, totFrames, sr, false, false)
+			ui.statusLabel.SetText("Playback stopped")
+		})
+	}()
+}
+
+func (ui *synthUI) seekPlaybackRatio(ratio float64) {
+	if ratio < 0 {
+		ratio = 0
+	}
+	if ratio > 1 {
+		ratio = 1
+	}
+	const bytesPerFrame = 4
+
+	ui.playMu.Lock()
+	if len(ui.playPCM) >= bytesPerFrame && ui.playTotalFrames > 0 {
+		targetFrame := int(ratio * float64(ui.playTotalFrames))
+		if targetFrame >= ui.playTotalFrames {
+			targetFrame = ui.playTotalFrames - 1
+		}
+		ui.playByteOffset = targetFrame * bytesPerFrame
+		ui.playMu.Unlock()
+		ui.updatePlayerControlsUI()
+		return
+	}
+	ui.playMu.Unlock()
+
+	if len(ui.currentSample) >= 2 && ui.params.SampleRate > 0 {
+		targetFrame := int(ratio * float64(len(ui.currentSample)/2))
+		src := ui.playSource
+		if src == "" {
+			src = "Note"
+		}
+		ui.startMalgoPlayback(src, ui.currentSample, ui.params.SampleRate, targetFrame)
+	}
+}
+
+func (ui *synthUI) updatePlayerControlsUI() {
+	if ui.playerProgressBar == nil || ui.playerTimeLabel == nil || ui.playerPlayPauseBtn == nil {
+		return
+	}
+	const bytesPerFrame = 4
+
+	ui.playMu.Lock()
+	curFrames := ui.playByteOffset / bytesPerFrame
+	totalFrames := ui.playTotalFrames
+	sr := ui.playSampleRate
+	playing := ui.isPlaying
+	paused := ui.isPaused
+	ui.playMu.Unlock()
+
+	if totalFrames == 0 && len(ui.currentSample) >= 2 {
+		totalFrames = len(ui.currentSample) / 2
+		sr = ui.params.SampleRate
+	}
+
+	var posSec, totalSec, ratio float64
+	if sr > 0 && totalFrames > 0 {
+		posSec = float64(curFrames) / float64(sr)
+		totalSec = float64(totalFrames) / float64(sr)
+		ratio = math.Min(1.0, math.Max(0.0, float64(curFrames)/float64(totalFrames)))
+	}
+
+	ui.playerProgressBar.SetValue(ratio)
+	if ui.playerSeekSlider != nil {
+		ui.seekingUI = true
+		ui.playerSeekSlider.SetValue(ratio)
+		ui.seekingUI = false
+	}
+	ui.playerTimeLabel.SetText(fmt.Sprintf("%s / %s", formatSeconds(posSec), formatSeconds(totalSec)))
+	if playing && !paused {
+		ui.playerPlayPauseBtn.SetText("Pause")
+	} else {
+		ui.playerPlayPauseBtn.SetText("Play")
+	}
 }
 
 // regenerateNote renders a single note via SynthesizeParams and redraws the visualization.
@@ -1694,24 +2123,14 @@ func (ui *synthUI) initWidgets() {
 
 	ui.playBtn = widget.NewButton("Play Note", func() {
 		ui.regenerateNote()
-		tmpPath := "preview_note.wav"
-		if err := xaudio.WriteWav(tmpPath, ui.params.SampleRate, 2, ui.currentSample); err != nil {
-			ui.statusLabel.SetText("Playback write error: " + err.Error())
-			return
-		}
-		playWavFile(tmpPath)
-		ui.statusLabel.SetText("Playing " + tmpPath)
+		ui.startMalgoPlayback("Note", ui.currentSample, ui.params.SampleRate, 0)
+		ui.statusLabel.SetText("Playing synthesized note via malgo")
 	})
 
 	ui.playSeqBtn = widget.NewButton("Play Sequence", func() {
 		ui.regenerateSequence()
-		tmpPath := "preview_sequence.wav"
-		if err := xaudio.WriteWav(tmpPath, ui.params.SampleRate, 2, ui.currentSample); err != nil {
-			ui.statusLabel.SetText("Sequence write error: " + err.Error())
-			return
-		}
-		playWavFile(tmpPath)
-		ui.statusLabel.SetText("Playing edited timeline sequence (" + tmpPath + ")")
+		ui.startMalgoPlayback("Sequence", ui.currentSample, ui.params.SampleRate, 0)
+		ui.statusLabel.SetText("Playing timeline sequence via malgo")
 	})
 
 	ui.saveBtn = widget.NewButton("Save WAV with Metadata", func() {
@@ -1734,6 +2153,28 @@ func (ui *synthUI) initWidgets() {
 		ui.resetAllToDefaults()
 	})
 
+	ui.playerPlayPauseBtn = widget.NewButton("Play", func() {
+		ui.togglePlayPause()
+	})
+	ui.playerStopBtn = widget.NewButton("Stop", func() {
+		ui.stopPlayback()
+	})
+	ui.playerProgressBar = widget.NewProgressBar()
+	ui.playerSeekSlider = widget.NewSlider(0.0, 1.0)
+	ui.playerSeekSlider.Step = 0.005
+	ui.playerSeekSlider.OnChanged = func(v float64) {
+		if ui.seekingUI {
+			return
+		}
+		ui.seekPlaybackRatio(v)
+	}
+	ui.playerTimeLabel = widget.NewLabel("00:00.0 / 00:00.0")
+	ui.playerBar = container.NewBorder(
+		nil, nil,
+		container.NewHBox(widget.NewLabelWithStyle("Player", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), ui.playerPlayPauseBtn, ui.playerStopBtn),
+		ui.playerTimeLabel,
+		container.NewVBox(ui.playerProgressBar, ui.playerSeekSlider),
+	)
 }
 
 // makeParameterRow places left label, stretching center input widget, and right numeric label
@@ -1858,7 +2299,11 @@ func (ui *synthUI) buildLayout() {
 		ui.topBarLine2,
 	)
 
-	// Vertical stack without VScroll lets the window size directly to all widgets with zero scrollbars.
+	bottomBar := container.NewVBox(
+		ui.playerBar,
+		ui.statusLabel,
+	)
+
 	root := container.NewBorder(
 		container.NewVBox(
 			ui.topBar,
@@ -1866,13 +2311,18 @@ func (ui *synthUI) buildLayout() {
 			ui.seqAccordion,
 			ui.metaAccordion,
 		),
-		ui.statusLabel,
-		nil,
-		nil,
+		bottomBar, nil, nil,
 		ui.vizAccordion,
 	)
 
 	ui.window.SetContent(root)
+	ui.window.SetOnClosed(func() {
+		ui.closeMalgoDeviceLocked()
+		if ui.malgoCtx != nil {
+			_ = ui.malgoCtx.Uninit()
+			ui.malgoCtx.Free()
+		}
+	})
 }
 
 func main() {
