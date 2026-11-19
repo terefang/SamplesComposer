@@ -4,6 +4,7 @@ go 1.27.4
 
 require (
 	fyne.io/fyne/v2 v2.8.2
+	github.com/gen2brain/malgo v0.11.28
 	github.com/terefang/gommons v0.0.0-20261119033704-b2591e49f63d
 )
 
