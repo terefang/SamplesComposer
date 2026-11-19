@@ -18,17 +18,19 @@ import (
 	"sync"
 	"time"
 
+	"fyne.io/fyne/v2/storage"
 	"github.com/gen2brain/malgo"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
-	"github.com/terefang/gommons/pkg/xaudio"
+	"SamplesComposer/pkg/xaudio"
 )
 
 // hardcodedPresetNames lists the built-in presets that are always available.
@@ -1647,7 +1649,7 @@ func (ui *synthUI) initWidgets() {
 	}
 
 	ui.snappyValLbl = widget.NewLabel(fmt.Sprintf("%.2f", ui.params.Snappy))
-	ui.snappySlider = widget.NewSlider(0.0, 1.0)
+	ui.snappySlider = widget.NewSlider(0.0, 10.0)
 	ui.snappySlider.Step = 0.01
 	ui.snappySlider.SetValue(ui.params.Snappy)
 	ui.snappySlider.OnChanged = func(v float64) {
@@ -1748,7 +1750,7 @@ func (ui *synthUI) initWidgets() {
 
 	ui.modRatioValLbl = widget.NewLabel(fmt.Sprintf("%.2f", ui.params.ModRatio))
 	ui.modRatioSlider = widget.NewSlider(0.5, 10.0)
-	ui.modRatioSlider.Step = 0.1
+	ui.modRatioSlider.Step = 0.01
 	ui.modRatioSlider.SetValue(ui.params.ModRatio)
 	ui.modRatioSlider.OnChanged = func(v float64) {
 		ui.params.ModRatio = v
@@ -1760,7 +1762,7 @@ func (ui *synthUI) initWidgets() {
 
 	ui.modIndexValLbl = widget.NewLabel(fmt.Sprintf("%.2f", ui.params.ModIndex))
 	ui.modIndexSlider = widget.NewSlider(0.0, 10.0)
-	ui.modIndexSlider.Step = 0.1
+	ui.modIndexSlider.Step = 0.01
 	ui.modIndexSlider.SetValue(ui.params.ModIndex)
 	ui.modIndexSlider.OnChanged = func(v float64) {
 		ui.params.ModIndex = v
@@ -1902,20 +1904,41 @@ func (ui *synthUI) initWidgets() {
 		ui.statusLabel.SetText("Playing synthesized note via malgo")
 	})
 
-	ui.saveBtn = widget.NewButton("Save WAV with Metadata", func() {
-		meta := xaudio.WavMetadata{
-			Title:       ui.titleEntry.Text,
-			Artist:      ui.artistEntry.Text,
-			Description: ui.descEntry.Text,
-			Software:    "gommons xaudio Fyne Synth",
-			Date:        "2026-11-19",
-		}
-		outFile := "sample_composer_output.wav"
-		if err := xaudio.WriteWavWithMetadata(outFile, ui.params.SampleRate, 2, ui.currentSample, meta); err != nil {
-			ui.statusLabel.SetText("Save error: " + err.Error())
-			return
-		}
-		ui.statusLabel.SetText("Saved " + outFile + " with RIFF INFO metadata")
+	ui.saveBtn = widget.NewButton("Save Sample", func() {
+		dlg := dialog.NewFileSave(func(writer fyne.URIWriteCloser, err error) {
+			if err != nil {
+				ui.statusLabel.SetText("Save dialog error: " + err.Error())
+				return
+			}
+			if writer == nil {
+				// User cancelled the dialog
+				return
+			}
+			outPath := writer.URI().Path()
+			_ = writer.Close()
+
+			if strings.ToLower(filepath.Ext(outPath)) != ".wav" {
+				outPath += ".wav"
+			}
+
+			meta := xaudio.WavMetadata{
+				Title:       ui.titleEntry.Text,
+				Artist:      ui.artistEntry.Text,
+				Description: ui.descEntry.Text,
+				Software:    "SampleComposer Fyne Synth",
+				Date:        "2026-11-19",
+			}
+
+			if err := xaudio.WriteWavWithMetadata(outPath, ui.params.SampleRate, 2, ui.currentSample, meta); err != nil {
+				ui.statusLabel.SetText("Save error: " + err.Error())
+				return
+			}
+			ui.statusLabel.SetText("Saved " + outPath + " with RIFF INFO metadata")
+		}, ui.window)
+
+		dlg.SetFileName("sample_composer_output.wav")
+		dlg.SetFilter(storage.NewExtensionFileFilter([]string{".wav"}))
+		dlg.Show()
 	})
 
 	ui.resetBtn = widget.NewButton("Reset Defaults", func() {
