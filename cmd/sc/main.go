@@ -155,6 +155,7 @@ type SynthParams struct {
     CenterDelayMs    float64
     DtoRate          float64
     AnalogDriftDepth float64
+    DbGain           float64 // player loudness
 }
 
 // defaultSynthParams returns the initial default configuration for all synthesizer parameters.
@@ -259,7 +260,7 @@ func lookupWave(p SynthParams, bw string, ifm bool) xoscillator.Waveform {
 }
 
 // SynthesizeParams renders a single NoteEvent using xaudio.RenderNote.
-func SynthesizeParams(p SynthParams) ([]int16, error) {
+func SynthesizeParams(p SynthParams, forSave bool) ([]int16, error) {
     effectiveMix := math.Min(1.0, math.Max(0.0, math.Pow(p.DetuneMix, 2.0)*(0.5+0.5*p.Tone)))
     effectiveAttack := math.Max(0.001, p.Attack*(1.0-0.7*p.Snappy))
     baseWave := lookupWave(p, p.BaseWave, true)
@@ -295,6 +296,11 @@ func SynthesizeParams(p SynthParams) ([]int16, error) {
         dto.SetSubOctave(p.SubOctave)
         dto.DetuneBufferStereo(ssamples, float64(p.SampleRate))
         return xoscillator.ConvertSamplesFtoI(ssamples), nil
+    }
+
+    if !forSave {
+        proc := xoscillator.NewDBGainProcessor(p.DbGain)
+        proc.ProcessBuffer(samples)
     }
     return xoscillator.ConvertSamplesFtoI2(samples), nil
 }
@@ -385,15 +391,16 @@ func resolveDetuneCurve(name string) xoscillator.DetuneCurve {
 
 // synthUI consolidates all Fyne application state, widgets, and layout containers into one struct.
 type synthUI struct {
-    app           fyne.App
-    window        fyne.Window
-    params        SynthParams
-    currentSample []int16
-    vizMode       string
-    vizLastSize   fyne.Size
-    iniPath       string
-    iniPresets    map[string]SynthParams
-    applyingState bool
+    app            fyne.App
+    window         fyne.Window
+    params         SynthParams
+    currentSample  []int16
+    currentSampleN []int16
+    vizMode        string
+    vizLastSize    fyne.Size
+    iniPath        string
+    iniPresets     map[string]SynthParams
+    applyingState  bool
 
     // Status & visualization widgets
     statusLabel    *widget.Label
@@ -526,6 +533,8 @@ type synthUI struct {
     soctSlider         *widget.Slider
     driftDepthValLbl   *widget.Label
     driftDepthSlider   *widget.Slider
+    dbgValLbl          *widget.Label
+    dbgSlider          *widget.Slider
 }
 
 func (ui *synthUI) syncParamsToUI(params SynthParams) {
@@ -848,7 +857,6 @@ func (ui *synthUI) startMalgoPlayback(sourceLabel string, samples []int16, sampl
         ui.playMu.Lock()
         ctx := ui.malgoCtx
         ui.playMu.Unlock()
-
         if ctx == nil {
             newCtx, err := malgo.InitContext(nil, malgo.ContextConfig{}, nil)
             if err != nil {
@@ -1029,7 +1037,7 @@ func (ui *synthUI) redrawVisualization() {
     }
     ui.vizBg.Resize(fyne.NewSize(width, height))
 
-    if len(ui.currentSample) == 0 {
+    if len(ui.currentSampleN) == 0 {
         ui.vizContainer.Refresh()
         return
     }
@@ -1043,13 +1051,13 @@ func (ui *synthUI) redrawVisualization() {
             numPoints = 60
         }
 
-        sLen := len(ui.currentSample)
+        sLen := len(ui.currentSampleN)
         midY := height / 2.0
         //dx := width / float32(sLen)
         if ui.vizMode == "Waveform" {
             var prevX, prevY float32
             for i := 0; (i < sLen) && (i < int(width*10)); i++ {
-                n := float32(ui.currentSample[i]) / float32(math.MaxInt16)
+                n := float32(ui.currentSampleN[i]) / float32(math.MaxInt16)
                 x := float32(i / 10.0)
                 y := midY - (n * (midY - 10))
                 if i > 0 {
@@ -1068,7 +1076,7 @@ func (ui *synthUI) redrawVisualization() {
             }
             var prevX, prevY float32
             for i := 0; i < numPoints && (i*step) < sLen; i++ {
-                norm := float32(ui.currentSample[i*step]) / float32(math.MaxInt16)
+                norm := float32(ui.currentSampleN[i*step]) / float32(math.MaxInt16)
                 x := float32(i) //* dx
                 y := midY - (norm * (midY - 10))
                 if i > 0 {
@@ -1248,15 +1256,15 @@ func (ui *synthUI) seekPlaybackRatio(ratio float64) {
 
 // regenerateNote renders a single note via SynthesizeParams and redraws the visualization.
 func (ui *synthUI) regenerateNote() {
-    samples, err := SynthesizeParams(ui.params)
+    samples, err := SynthesizeParams(ui.params, false)
     if err != nil {
         ui.statusLabel.SetText("Synthesis error: " + err.Error())
         return
     }
-    samples = applySampleNormalization(samples, ui.params.NormalizePct)
-    ui.currentSample = samples
-    ui.syncPlaybackWithRenderedSamples("Note", samples, ui.params.SampleRate)
-    ui.statusLabel.SetText(fmt.Sprintf("Rendered %d stereo frames @ %d Hz", len(samples)/2, ui.params.SampleRate))
+    ui.currentSampleN = applySampleNormalization(samples, 100)
+    ui.currentSample = applySampleNormalization(samples, ui.params.NormalizePct)
+    ui.syncPlaybackWithRenderedSamples("Note", ui.currentSample, ui.params.SampleRate)
+    ui.statusLabel.SetText(fmt.Sprintf("Rendered %d stereo frames @ %d Hz", len(ui.currentSample)/2, ui.params.SampleRate))
     ui.redrawVisualization()
 }
 
@@ -1264,6 +1272,18 @@ func (ui *synthUI) regenerateNote() {
 func (ui *synthUI) initWidgets() {
     ui.presetSaveBtn = widget.NewButton("Save Preset", func() { ui.savePresets() })
     ui.presetLoadBtn = widget.NewButton("Load Preset", func() { ui.loadPresets() })
+
+    ui.dbgValLbl = widget.NewLabel(fmt.Sprintf("%+.1fdB", ui.params.DbGain))
+    ui.dbgSlider = widget.NewSlider(-50.0, 0.0)
+    ui.dbgSlider.Step = 1
+    ui.dbgSlider.SetValue(ui.params.DbGain)
+    ui.dbgSlider.OnChanged = func(v float64) {
+        ui.params.DbGain = v
+        ui.dbgValLbl.SetText(fmt.Sprintf("%+.1fdB", v))
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    }
 
     ui.statusLabel = widget.NewLabel("Ready")
 
@@ -1368,12 +1388,18 @@ func (ui *synthUI) saveWavFile() func() {
                     Text:        text,
                 }
 
-                if err := xaudio.WriteWavWithMetadata(outPath, ui.params.SampleRate, 2, ui.currentSample, meta); err != nil {
-                    ui.statusLabel.SetText("Save error: " + err.Error())
-                    return
-                }
-                ui.statusLabel.SetText("Saved " + outPath + " with RIFF INFO metadata")
+                outSamples, err := SynthesizeParams(ui.params, true)
+                outSamples = applySampleNormalization(outSamples, ui.params.NormalizePct)
 
+                if err == nil {
+                    if err = xaudio.WriteWavWithMetadata(outPath, ui.params.SampleRate, 2, outSamples, meta); err != nil {
+                        ui.statusLabel.SetText("Save error: " + err.Error())
+                        return
+                    }
+                    ui.statusLabel.SetText("Saved " + outPath + " with RIFF INFO metadata")
+                } else {
+                    ui.statusLabel.SetText("Error: " + err.Error())
+                }
             },
             func() {
                 ui.statusLabel.SetText("Save dialog error: Dialog cancelled")
@@ -1617,29 +1643,28 @@ func (ui *synthUI) buildLayout() {
     )
     ui.vizAccordion.Open(0)
 
-    ui.topBar = container.NewGridWithColumns(5,
+    ui.topBar = container.NewGridWithColumns(6,
         ui.playBtn,
+        container.NewBorder(nil, nil, nil, ui.dbgValLbl, makeHSliderPlusMinus(ui.dbgSlider)),
         ui.resetBtn,
         ui.saveBtn,
         ui.presetSaveBtn,
         ui.presetLoadBtn,
     )
 
-    bottomBar := container.NewVBox(
-        ui.playerBar,
-        ui.statusLabel,
-    )
+    scroller := container.NewVScroll(container.NewVBox(ui.baseWaveComposer,
+        ui.fmWaveComposer,
+        ui.colDTO,
+        ui.colADSR,
+        ui.colTENV,
+        ui.metaAccordion,
 
-    root := container.NewBorder(
-        container.NewVBox(
-            ui.topBar,
-            ui.baseWaveComposer,
-            container.NewVBox(ui.fmWaveComposer, ui.colDTO, ui.colADSR, ui.colTENV),
-            ui.metaAccordion,
-        ),
-        bottomBar, nil, nil,
-        ui.vizAccordion,
+    ),
     )
+    scroller.SetMinSize(fyne.NewSize(600, 600))
+    root := container.NewBorder(ui.topBar,
+        container.NewVBox(ui.vizAccordion, ui.playerBar, ui.statusLabel),
+        nil, nil, scroller)
 
     ui.window.SetContent(root)
     ui.window.SetOnClosed(func() {
