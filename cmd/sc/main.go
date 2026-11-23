@@ -4,15 +4,16 @@ package main
 
 import (
     "SamplesComposer/pkg"
-    "bufio"
+    "SamplesComposer/pkg/xfyne"
+    "SamplesComposer/pkg/xoscillator"
     "encoding/binary"
+    "encoding/json"
     "fmt"
     "image/color"
     "math"
     "math/cmplx"
     "os"
     "path/filepath"
-    "sort"
     "strconv"
     "strings"
     "sync"
@@ -20,36 +21,18 @@ import (
 
     "fyne.io/fyne/v2/storage"
     "github.com/gen2brain/malgo"
+    "github.com/terefang/gommons/pkg/xdg"
 
     "fyne.io/fyne/v2"
     "fyne.io/fyne/v2/app"
     "fyne.io/fyne/v2/canvas"
     "fyne.io/fyne/v2/container"
-    "fyne.io/fyne/v2/dialog"
     "fyne.io/fyne/v2/layout"
     "fyne.io/fyne/v2/theme"
     "fyne.io/fyne/v2/widget"
 
     "SamplesComposer/pkg/xaudio"
 )
-
-// hardcodedPresetNames lists the built-in presets that are always available.
-var hardcodedPresetNames = []string{
-    "Analog Trance Synth",
-    "Hypersaw",
-    "MultiSaw",
-}
-
-// isHardcodedPreset returns true if name matches one of the built-in presets.
-func isHardcodedPreset(name string) bool {
-    trimmed := strings.TrimSpace(name)
-    for _, h := range hardcodedPresetNames {
-        if h == trimmed {
-            return true
-        }
-    }
-    return false
-}
 
 // customSynthTheme implements fyne.Theme to allow instant runtime switching
 // between dark and light appearance modes while delegating base metrics/colors to fyne.DefaultTheme().
@@ -134,75 +117,78 @@ func (l *stretchVizLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
     }
 }
 
-// SequenceStep defines a single editable step on the timeline that maps to xaudio.NoteEvent.
-type SequenceStep struct {
-    StartSec    float64 // Step start time in seconds along the timeline
-    Freq        float64 // Pitch frequency in Hz
-    DurationSec float64 // Held duration in seconds
-    Velocity    float64 // Note velocity multiplier (0.0 to 1.0)
-}
-
 // SynthParams holds every parametric value as an explicit configuration field.
 type SynthParams struct {
-    SampleRate   int                  // Sample rate in Hz (8000, 16000, 32000, 48000)
-    LengthMs     float64              // Total single-note duration in milliseconds (1000 to 30000)
-    Tune         float64              // Base oscillator frequency in Hz
-    Tone         float64              // Tone filter / modulation index balance (0.0 to 1.0)
-    Snappy       float64              // Noise transient mix and attack scaling (0.0 to 1.0)
-    NormalizePct int64                // Peak normalization target in % (0 = off, 1..100 = target peak %)
-    BaseWave     xaudio.Waveform      // Oscillator waveform shape (Sine, Sawtooth, SawtoothPoly, Square, SquarePoly, Triangle, FM)
-    Voices       int                  // Unison voice count (>= 1)
-    Detune       float64              // Pitch spread across voices (0.0 to 1.0)
-    DetuneCurve  xaudio.DetuneCurve   // Voice detune distribution curve (CurveLinear, CurveJP8000, CurveExponential)
-    Mix          float64              // Balance between side voices and center voice (0.0 to 1.0)
-    StereoWidth  float64              // Stereo pan spread (0.0 to 1.0)
-    SubOctave    bool                 // Enable -1 octave sub-bass reinforcement
-    AnalogDrift  float64              // LFO pitch wander per voice (0.0 to 1.0)
-    HardSync     bool                 // Lock oscillator phases to master cycle
-    PulseWidth   float64              // Square wave duty cycle (0.05 to 0.95)
-    ModRatio     float64              // FM modulator-to-carrier frequency ratio
-    ModIndex     float64              // FM modulation depth
-    Attack       float64              // Attack time in seconds
-    Decay        float64              // Decay time in seconds
-    Sustain      float64              // Sustain amplitude level (0.0 to 1.0)
-    Release      float64              // Release tail in seconds
-    AttackCurve  xaudio.EnvelopeCurve // Attack stage interpolation curve
-    DecayCurve   xaudio.EnvelopeCurve // Decay stage interpolation curve
-    ReleaseCurve xaudio.EnvelopeCurve // Release stage interpolation curve
-    WobbleCycles float64              // Modulation cycles for NewBicubicWobbleCurve
-    WobbleDepth  float64              // Modulation depth for NewBicubicWobbleCurve
+    Name             string
+    SampleRate       int     // Sample rate in Hz (8000, 16000, 32000, 48000)
+    LengthMs         float64 // Total single-note duration in milliseconds (1000 to 30000)
+    Tune             float64 // Base oscillator frequency in Hz
+    Tone             float64 // Tone filter / modulation index balance (0.0 to 1.0)
+    Snappy           float64 // Noise transient mix and attack scaling (0.0 to 1.0)
+    NormalizePct     int64   // Peak normalization target in % (0 = off, 1..100 = target peak %)
+    BaseWave         string  // Oscillator waveform shape (Sine, Sawtooth, SawtoothPoly, Square, SquarePoly, Triangle, FM)
+    Voices           int     // Unison voice count (>= 1)
+    Detune           float64 // Pitch spread across voices (0.0 to 1.0)
+    DetuneCurve      string  // Voice detune distribution curve
+    DetuneMix        float64 // Balance between side voices and center voice (0.0 to 1.0)
+    StereoWidth      float64 // Stereo pan spread (0.0 to 1.0)
+    SubOctave        float64 // Enable -1 octave sub-bass reinforcement
+    AnalogDrift      float64 // LFO pitch wander per voice (0.0 to 1.0)
+    HardSync         bool    // Lock oscillator phases to master cycle
+    PulseWidth       float64 // Square wave duty cycle (0.05 to 0.95)
+    ModRatio         float64 // FM modulator-to-carrier frequency ratio
+    ModIndex         float64 // FM modulation depth
+    Attack           float64 // Attack time in seconds
+    Decay            float64 // Decay time in seconds
+    Sustain          float64 // Sustain amplitude level (0.0 to 1.0)
+    Release          float64 // Release tail in seconds
+    Seed             int32
+    AsdrEnable       bool
+    Delay            float64
+    Hold             float64
+    TenvEnable       bool
+    TenvInterp       string
+    Tenv             []float64
+    DtoStage         string
+    Fm1Wave          string
+    Fm2Wave          string
+    CenterDelayMs    float64
+    DtoRate          float64
+    AnalogDriftDepth float64
 }
 
 // defaultSynthParams returns the initial default configuration for all synthesizer parameters.
 func defaultSynthParams() SynthParams {
     return SynthParams{
-        SampleRate:   48000,
-        LengthMs:     1500.0,
-        Tune:         65.41,
-        Tone:         0.65,
-        Snappy:       0.50,
-        NormalizePct: 0,
-        BaseWave:     xaudio.SawtoothPoly,
-        Voices:       7,
-        Detune:       0.35,
-        DetuneCurve:  xaudio.CurveJP8000,
-        Mix:          0.75,
-        StereoWidth:  0.80,
-        SubOctave:    true,
-        AnalogDrift:  0.15,
-        HardSync:     false,
-        PulseWidth:   0.50,
-        ModRatio:     2.0,
-        ModIndex:     1.0,
-        Attack:       0.01,
-        Decay:        0.35,
-        Sustain:      0.60,
-        Release:      0.25,
-        AttackCurve:  xaudio.EnvHermite,
-        DecayCurve:   xaudio.EnvExponential,
-        ReleaseCurve: xaudio.EnvLogarithmic,
-        WobbleCycles: 3.0,
-        WobbleDepth:  0.15,
+        SampleRate:       48000,
+        LengthMs:         1500.0,
+        Tune:             65.41,
+        Tone:             0.65,
+        Snappy:           0.50,
+        NormalizePct:     0,
+        BaseWave:         "fm",
+        Voices:           7,
+        Detune:           0.35,
+        DetuneCurve:      "linear",
+        DetuneMix:        0.75,
+        StereoWidth:      0.80,
+        SubOctave:        0,
+        AnalogDrift:      0.15,
+        HardSync:         false,
+        PulseWidth:       0.50,
+        ModRatio:         2.0,
+        ModIndex:         1.0,
+        Attack:           0.01,
+        Decay:            0.35,
+        Sustain:          0.60,
+        Release:          0.25,
+        Tenv:             make([]float64, 16),
+        DtoStage:         "off",
+        Fm1Wave:          "sine",
+        Fm2Wave:          "sine",
+        CenterDelayMs:    0.,
+        DtoRate:          0.,
+        AnalogDriftDepth: 0.0022,
     }
 }
 
@@ -243,366 +229,74 @@ func applySampleNormalization(samples []int16, normPct int64) []int16 {
     return out
 }
 
-// defaultSequenceSteps returns a fresh copy of the initial default timeline steps.
-func defaultSequenceSteps() []SequenceStep {
-    return []SequenceStep{
-        {StartSec: 0.0, Freq: 65.41, DurationSec: 0.45, Velocity: 0.90},
-        {StartSec: 0.5, Freq: 77.78, DurationSec: 0.45, Velocity: 0.85},
-        {StartSec: 1.0, Freq: 98.00, DurationSec: 0.45, Velocity: 0.85},
-        {StartSec: 1.5, Freq: 130.81, DurationSec: 0.60, Velocity: 0.95},
-    }
-}
-
-// resolvePresetsIniPath returns <XDG user config dir>/gommons-xaudio/presets.ini.
-func resolvePresetsIniPath() string {
-    cfgDir, err := os.UserConfigDir()
-    if err != nil || strings.TrimSpace(cfgDir) == "" {
-        return "presets.ini"
-    }
-    return filepath.Join(cfgDir, "SamplesComposer", "presets.ini")
-}
-
-// formatWaveformName converts an xaudio.Waveform value to its UI/INI label.
-func formatWaveformName(w xaudio.Waveform) string {
-    switch w {
-    case xaudio.Sine:
-        return "Sine"
-    case xaudio.Sawtooth:
-        return "Sawtooth"
-    case xaudio.Square:
-        return "Square"
-    case xaudio.SquarePoly:
-        return "SquarePoly"
-    case xaudio.Triangle:
-        return "Triangle"
-    case xaudio.FM:
-        return "FM"
-    default:
-        return "SawtoothPoly"
-    }
-}
-
-// formatDetuneCurveName converts an xaudio.DetuneCurve value to its UI/INI label.
-func formatDetuneCurveName(dc *xaudio.DetuneCurve) string {
-    switch dc {
-    case &xaudio.CurveLinear:
-        return "Linear"
-    case &xaudio.CurveExponential:
-        return "Exponential"
-    case &xaudio.CurveJP8000:
-        return "Analog Trance Synth"
-    default:
-        return "Custom"
-    }
-}
-
-// formatEnvelopeCurveName converts an xaudio.EnvelopeCurve value to a curve name when possible.
-func formatEnvelopeCurveName(ec xaudio.EnvelopeCurve, fallback string) string {
-    switch {
-    case fmt.Sprintf("%p", ec) == fmt.Sprintf("%p", xaudio.EnvLinear):
-        return "Linear"
-    case fmt.Sprintf("%p", ec) == fmt.Sprintf("%p", xaudio.EnvExponential):
-        return "Exponential"
-    case fmt.Sprintf("%p", ec) == fmt.Sprintf("%p", xaudio.EnvLogarithmic):
-        return "Logarithmic"
-    case fmt.Sprintf("%p", ec) == fmt.Sprintf("%p", xaudio.EnvHermite):
-        return "Hermite"
-    case fmt.Sprintf("%p", ec) == fmt.Sprintf("%p", xaudio.EnvRadian):
-        return "Radian"
-    default:
-        return fallback
-    }
-}
-
-// loadPresetsFromINI reads INI sections from presets.ini in the XDG user config directory.
-func loadPresetsFromINI(path string) (map[string]SynthParams, error) {
-    f, err := os.Open(path)
-    if err != nil {
-        return nil, err
-    }
-    defer f.Close()
-
-    presets := make(map[string]SynthParams)
-    var currentSection string
-    currentParams := defaultSynthParams()
-
-    flushSection := func() {
-        if strings.TrimSpace(currentSection) != "" {
-            presets[currentSection] = currentParams
-        }
-    }
-
-    scanner := bufio.NewScanner(f)
-    for scanner.Scan() {
-        line := strings.TrimSpace(scanner.Text())
-        if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
-            continue
-        }
-        if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-            flushSection()
-            currentSection = strings.TrimSpace(line[1 : len(line)-1])
-            currentParams = defaultSynthParams()
-            continue
-        }
-        if currentSection == "" {
-            continue
-        }
-        parts := strings.SplitN(line, "=", 2)
-        if len(parts) != 2 {
-            continue
-        }
-        key := strings.TrimSpace(parts[0])
-        val := strings.TrimSpace(parts[1])
-
-        switch key {
-        case "sample_rate":
-            if v, err := strconv.Atoi(val); err == nil {
-                currentParams.SampleRate = v
-            }
-        case "length_ms":
-            if v, err := strconv.ParseFloat(val, 64); err == nil {
-                currentParams.LengthMs = v
-            }
-        case "tune":
-            if v, err := strconv.ParseFloat(val, 64); err == nil {
-                currentParams.Tune = v
-            }
-        case "tone":
-            if v, err := strconv.ParseFloat(val, 64); err == nil {
-                currentParams.Tone = v
-            }
-        case "snappy":
-            if v, err := strconv.ParseFloat(val, 64); err == nil {
-                currentParams.Snappy = v
-            }
-        case "base_wave":
-            currentParams.BaseWave = resolveWaveform(val)
-        case "voices":
-            if v, err := strconv.Atoi(val); err == nil && v >= 1 {
-                currentParams.Voices = v
-            }
-        case "detune":
-            if v, err := strconv.ParseFloat(val, 64); err == nil {
-                currentParams.Detune = v
-            }
-        case "detune_curve":
-            currentParams.DetuneCurve = resolveDetuneCurve(val)
-        case "mix":
-            if v, err := strconv.ParseFloat(val, 64); err == nil {
-                currentParams.Mix = v
-            }
-        case "stereo_width":
-            if v, err := strconv.ParseFloat(val, 64); err == nil {
-                currentParams.StereoWidth = v
-            }
-        case "sub_octave":
-            if v, err := strconv.ParseBool(val); err == nil {
-                currentParams.SubOctave = v
-            }
-        case "analog_drift":
-            if v, err := strconv.ParseFloat(val, 64); err == nil {
-                currentParams.AnalogDrift = v
-            }
-        case "hard_sync":
-            if v, err := strconv.ParseBool(val); err == nil {
-                currentParams.HardSync = v
-            }
-        case "pulse_width":
-            if v, err := strconv.ParseFloat(val, 64); err == nil {
-                currentParams.PulseWidth = v
-            }
-        case "mod_ratio":
-            if v, err := strconv.ParseFloat(val, 64); err == nil {
-                currentParams.ModRatio = v
-            }
-        case "mod_index":
-            if v, err := strconv.ParseFloat(val, 64); err == nil {
-                currentParams.ModIndex = v
-            }
-        case "attack":
-            if v, err := strconv.ParseFloat(val, 64); err == nil {
-                currentParams.Attack = v
-            }
-        case "decay":
-            if v, err := strconv.ParseFloat(val, 64); err == nil {
-                currentParams.Decay = v
-            }
-        case "sustain":
-            if v, err := strconv.ParseFloat(val, 64); err == nil {
-                currentParams.Sustain = v
-            }
-        case "release":
-            if v, err := strconv.ParseFloat(val, 64); err == nil {
-                currentParams.Release = v
-            }
-        case "wobble_cycles":
-            if v, err := strconv.ParseFloat(val, 64); err == nil {
-                currentParams.WobbleCycles = v
-            }
-        case "wobble_depth":
-            if v, err := strconv.ParseFloat(val, 64); err == nil {
-                currentParams.WobbleDepth = v
-            }
-        case "attack_curve":
-            currentParams.AttackCurve = resolveEnvelopeCurve(val, currentParams.WobbleCycles, currentParams.WobbleDepth)
-        case "decay_curve":
-            currentParams.DecayCurve = resolveEnvelopeCurve(val, currentParams.WobbleCycles, currentParams.WobbleDepth)
-        case "release_curve":
-            currentParams.ReleaseCurve = resolveEnvelopeCurve(val, currentParams.WobbleCycles, currentParams.WobbleDepth)
-        }
-    }
-    if err := scanner.Err(); err != nil {
-        return nil, err
-    }
-    flushSection()
-    return presets, nil
-}
-
-// writePresetsINI serializes the provided map of INI presets to presets.ini.
-func writePresetsINI(path string, presets map[string]SynthParams) error {
-    if len(presets) == 0 {
-        if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-            return err
-        }
-        return nil
-    }
-
-    if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-        return err
-    }
-
-    names := make([]string, 0, len(presets))
-    for k := range presets {
-        names = append(names, k)
-    }
-    sort.Strings(names)
-
-    var sb strings.Builder
-    sb.WriteString("# SamplesComposer presets\n")
-    for _, k := range names {
-        pr := presets[k]
-        sb.WriteString(fmt.Sprintf("\n[%s]\n", k))
-        sb.WriteString(fmt.Sprintf("sample_rate=%d\n", pr.SampleRate))
-        sb.WriteString(fmt.Sprintf("length_ms=%.2f\n", pr.LengthMs))
-        sb.WriteString(fmt.Sprintf("tune=%.2f\n", pr.Tune))
-        sb.WriteString(fmt.Sprintf("tone=%.4f\n", pr.Tone))
-        sb.WriteString(fmt.Sprintf("snappy=%.4f\n", pr.Snappy))
-        sb.WriteString(fmt.Sprintf("base_wave=%s\n", formatWaveformName(pr.BaseWave)))
-        sb.WriteString(fmt.Sprintf("voices=%d\n", pr.Voices))
-        sb.WriteString(fmt.Sprintf("detune=%.4f\n", pr.Detune))
-        sb.WriteString(fmt.Sprintf("detune_curve=%s\n", formatDetuneCurveName(&pr.DetuneCurve)))
-        sb.WriteString(fmt.Sprintf("mix=%.4f\n", pr.Mix))
-        sb.WriteString(fmt.Sprintf("stereo_width=%.4f\n", pr.StereoWidth))
-        sb.WriteString(fmt.Sprintf("sub_octave=%t\n", pr.SubOctave))
-        sb.WriteString(fmt.Sprintf("analog_drift=%.4f\n", pr.AnalogDrift))
-        sb.WriteString(fmt.Sprintf("hard_sync=%t\n", pr.HardSync))
-        sb.WriteString(fmt.Sprintf("pulse_width=%.4f\n", pr.PulseWidth))
-        sb.WriteString(fmt.Sprintf("mod_ratio=%.4f\n", pr.ModRatio))
-        sb.WriteString(fmt.Sprintf("mod_index=%.4f\n", pr.ModIndex))
-        sb.WriteString(fmt.Sprintf("attack=%.4f\n", pr.Attack))
-        sb.WriteString(fmt.Sprintf("decay=%.4f\n", pr.Decay))
-        sb.WriteString(fmt.Sprintf("sustain=%.4f\n", pr.Sustain))
-        sb.WriteString(fmt.Sprintf("release=%.4f\n", pr.Release))
-        sb.WriteString(fmt.Sprintf("attack_curve=%s\n", formatEnvelopeCurveName(pr.AttackCurve, "Hermite")))
-        sb.WriteString(fmt.Sprintf("decay_curve=%s\n", formatEnvelopeCurveName(pr.DecayCurve, "Exponential")))
-        sb.WriteString(fmt.Sprintf("release_curve=%s\n", formatEnvelopeCurveName(pr.ReleaseCurve, "Logarithmic")))
-        sb.WriteString(fmt.Sprintf("wobble_cycles=%.2f\n", pr.WobbleCycles))
-        sb.WriteString(fmt.Sprintf("wobble_depth=%.4f\n", pr.WobbleDepth))
-    }
-
-    return os.WriteFile(path, []byte(sb.String()), 0o644)
-}
-
-// savePresetToINI writes or updates a named preset section inside presets.ini in the XDG user config dir.
-func savePresetToINI(path, name string, p SynthParams) error {
-    trimmedName := strings.TrimSpace(name)
-    if trimmedName == "" {
-        return fmt.Errorf("preset name cannot be empty")
-    }
-
-    existing, err := loadPresetsFromINI(path)
-    if err != nil && !os.IsNotExist(err) {
-        return err
-    }
-    if existing == nil {
-        existing = make(map[string]SynthParams)
-    }
-    existing[trimmedName] = p
-    return writePresetsINI(path, existing)
-}
-
-// removePresetFromINI removes a named INI preset section from presets.ini in the XDG user config dir.
-func removePresetFromINI(path, name string) (bool, error) {
-    trimmedName := strings.TrimSpace(name)
-    if trimmedName == "" {
-        return false, fmt.Errorf("preset name cannot be empty")
-    }
-
-    existing, err := loadPresetsFromINI(path)
-    if err != nil {
-        if os.IsNotExist(err) {
-            return false, nil
-        }
-        return false, err
-    }
-
-    if _, exists := existing[trimmedName]; !exists {
-        return false, nil
-    }
-    delete(existing, trimmedName)
-    if err := writePresetsINI(path, existing); err != nil {
-        return false, err
-    }
-    return true, nil
-}
-
-// BuildUnisonConfig constructs an xaudio.UnisonConfig from current synth parameters.
-func BuildUnisonConfig(p SynthParams) xaudio.UnisonConfig {
+func lookupWave(p SynthParams, bw string, ifm bool) xoscillator.Waveform {
     effectiveModIndex := p.ModIndex + (p.Tone * 2.5)
-    effectiveMix := math.Min(1.0, math.Max(0.0, p.Mix*(0.5+0.5*p.Tone)))
-    return xaudio.UnisonConfig{
-        BaseWave:    p.BaseWave,
-        Voices:      p.Voices,
-        Detune:      p.Detune,
-        DetuneCurve: p.DetuneCurve,
-        Mix:         effectiveMix,
-        StereoWidth: p.StereoWidth,
-        SubOctave:   p.SubOctave,
-        AnalogDrift: p.AnalogDrift,
-        HardSync:    p.HardSync,
-        PulseWidth:  p.PulseWidth,
-        ModRatio:    p.ModRatio,
-        ModIndex:    effectiveModIndex,
+    baseWave, ok := xoscillator.LookupWaveform(bw)
+    if ok {
+        return baseWave
     }
-}
+    spl, ok2 := xoscillator.LookupWaveSampler(bw, 0x1337, 2, .5, false, 2, 2.0, .5, .5, .5)
+    if ok2 {
+        return spl
+    }
 
-// BuildADSR constructs an xaudio.ADSR envelope from current synth parameters.
-func BuildADSR(p SynthParams) xaudio.ADSR {
-    effectiveAttack := math.Max(0.001, p.Attack*(1.0-0.7*p.Snappy))
-    return xaudio.ADSR{
-        Attack:       effectiveAttack,
-        Decay:        p.Decay,
-        Sustain:      p.Sustain,
-        Release:      p.Release,
-        AttackCurve:  p.AttackCurve,
-        DecayCurve:   p.DecayCurve,
-        ReleaseCurve: p.ReleaseCurve,
+    if ifm || bw == "fm" {
+        fm2 := lookupWave(p, p.Fm2Wave, false)
+        fm2.SetPulseWidth(1.0)
+        fm := xoscillator.NewFM2Waveform(p.ModRatio, effectiveModIndex, fm2, p.PulseWidth)
+        return fm
+    } else if bw == "fm2" {
+        fm1 := lookupWave(p, p.Fm1Wave, false)
+        fm1.SetPulseWidth(1.0)
+        fm2 := lookupWave(p, p.Fm2Wave, false)
+        fm2.SetPulseWidth(1.0)
+        fm := xoscillator.NewFMWaveform(p.ModRatio, effectiveModIndex, fm2, fm1, false)
+        fm.SetPulseWidth(p.PulseWidth)
+        return fm
     }
+
+    return xoscillator.NewPulseWaveform(.5)
 }
 
 // SynthesizeParams renders a single NoteEvent using xaudio.RenderNote.
 func SynthesizeParams(p SynthParams) ([]int16, error) {
-    cfg := BuildUnisonConfig(p)
-    env := BuildADSR(p)
-    note := xaudio.NoteEvent{
-        StartSec:    0.0,
-        DurationSec: p.LengthMs / 1000.0,
-        Freq:        p.Tune,
-        Velocity:    0.85 + (0.15 * p.Snappy),
-        Config:      &cfg,
-        Envelope:    &env,
+    effectiveMix := math.Min(1.0, math.Max(0.0, math.Pow(p.DetuneMix, 2.0)*(0.5+0.5*p.Tone)))
+    effectiveAttack := math.Max(0.001, p.Attack*(1.0-0.7*p.Snappy))
+    baseWave := lookupWave(p, p.BaseWave, true)
+    engine := xoscillator.NewOscillatorEngine(p.Tune, 0.0, baseWave, nil, nil, nil, false, p.PulseWidth, p.Seed)
+
+    samples := engine.RenderSamples(float64(p.SampleRate), p.LengthMs/1000.0)
+    senv := xoscillator.NewSequenceEnvelope()
+    if p.AsdrEnable {
+        env := xoscillator.NewADSR(effectiveAttack, p.Decay, p.Sustain, p.Release)
+        env.HoldSec = p.Hold
+        env.DelaySec = p.Delay
+        senv.AddEnvelope(env)
     }
-    return xaudio.RenderNote(cfg, env, p.SampleRate, note)
+    if p.TenvEnable {
+        interp, _ := xoscillator.LookupEnvelopeInterpolator(p.TenvInterp)
+        env := xoscillator.NewTableEnvelope(p.LengthMs/15000., [16]float64(p.Tenv), interp)
+        senv.AddEnvelope(env)
+    }
+    senv.ApplyBuffer(samples, float64(p.SampleRate))
+    if xoscillator.HasAnalogSynthDetunePreset(p.DtoStage) {
+        ssamples := xoscillator.ConvertSamplesMonoToInterleavedStereo(samples)
+        dcurve, _ := xoscillator.LookupDetuneCurve(p.DetuneCurve)
+        dto, _ := xoscillator.LookupAnalogSynthDetunePreset(p.DtoStage)
+        dto.SetVoices(p.Voices)
+        dto.SetDetune(p.Detune)
+        dto.SetDetuneCurve(dcurve)
+        dto.SetMix(effectiveMix)
+        dto.SetStereoWidth(p.StereoWidth)
+        dto.SetAnalogDrift(p.AnalogDrift)
+        dto.SetAnalogDriftDepth(p.AnalogDriftDepth)
+        dto.SetRate(p.DtoRate)
+        dto.SetCenterDelayMs(p.CenterDelayMs)
+        dto.SetSubOctave(p.SubOctave)
+        dto.DetuneBufferStereo(ssamples, float64(p.SampleRate))
+        return xoscillator.ConvertSamplesFtoI(ssamples), nil
+    }
+    return xoscillator.ConvertSamplesFtoI2(samples), nil
 }
 
 // computeSpectrum performs an FFT on left-channel samples to yield normalized magnitudes [0.0, 1.0].
@@ -678,34 +372,14 @@ func resolveEnvelopeCurve(name string, cycles, depth float64) xaudio.EnvelopeCur
 }
 
 // resolveDetuneCurve translates detune curve string selections into xaudio.DetuneCurve callbacks.
-func resolveDetuneCurve(name string) xaudio.DetuneCurve {
+func resolveDetuneCurve(name string) xoscillator.DetuneCurve {
     switch name {
-    case "Analog Trance Synth":
-        return xaudio.CurveJP8000
+    case "Scurve":
+        return xoscillator.DetuneCurveSCurve
     case "Exponential":
-        return xaudio.CurveExponential
+        return xoscillator.DetuneCurveExponential
     default:
-        return xaudio.CurveLinear
-    }
-}
-
-// resolveWaveform translates waveform string selections into xaudio.Waveform constants.
-func resolveWaveform(name string) xaudio.Waveform {
-    switch name {
-    case "Sine":
-        return xaudio.Sine
-    case "Sawtooth":
-        return xaudio.Sawtooth
-    case "Square":
-        return xaudio.Square
-    case "SquarePoly":
-        return xaudio.SquarePoly
-    case "Triangle":
-        return xaudio.Triangle
-    case "FM":
-        return xaudio.FM
-    default:
-        return xaudio.SawtoothPoly
+        return xoscillator.DetuneCurveLinear
     }
 }
 
@@ -714,7 +388,6 @@ type synthUI struct {
     app           fyne.App
     window        fyne.Window
     params        SynthParams
-    steps         []SequenceStep
     currentSample []int16
     vizMode       string
     vizLastSize   fyne.Size
@@ -732,10 +405,8 @@ type synthUI struct {
 
     // Selectors, combobox & checkboxes
     modeSelect         *widget.Select
-    presetCombo        *widget.SelectEntry
-    savePresetBtn      *widget.Button
-    loadPresetsBtn     *widget.Button
-    deletePresetBtn    *widget.Button
+    presetSaveBtn      *widget.Button
+    presetLoadBtn      *widget.Button
     srSelect           *widget.Select
     waveSelect         *widget.Select
     detuneCurveSelect  *widget.Select
@@ -746,42 +417,38 @@ type synthUI struct {
     releaseCurveSelect *widget.Select
 
     // Sliders and real-time value readouts
-    lengthSlider       *widget.Slider
-    lengthValLbl       *widget.Label
-    tuneSlider         *widget.Slider
-    tuneValLbl         *widget.Label
-    toneSlider         *widget.Slider
-    toneValLbl         *widget.Label
-    snappySlider       *widget.Slider
-    snappyValLbl       *widget.Label
-    modRatioSlider     *widget.Slider
-    modRatioValLbl     *widget.Label
-    modIndexSlider     *widget.Slider
-    modIndexValLbl     *widget.Label
-    voicesSlider       *widget.Slider
-    voicesValLbl       *widget.Label
-    detuneSlider       *widget.Slider
-    detuneValLbl       *widget.Label
-    mixSlider          *widget.Slider
-    mixValLbl          *widget.Label
-    widthSlider        *widget.Slider
-    widthValLbl        *widget.Label
-    driftSlider        *widget.Slider
-    driftValLbl        *widget.Label
-    pulseWidthSlider   *widget.Slider
-    pulseWidthValLbl   *widget.Label
-    attackSlider       *widget.Slider
-    attackValLbl       *widget.Label
-    decaySlider        *widget.Slider
-    decayValLbl        *widget.Label
-    sustainSlider      *widget.Slider
-    sustainValLbl      *widget.Label
-    releaseSlider      *widget.Slider
-    releaseValLbl      *widget.Label
-    wobbleCyclesSlider *widget.Slider
-    wobbleCyclesValLbl *widget.Label
-    wobbleDepthSlider  *widget.Slider
-    wobbleDepthValLbl  *widget.Label
+    lengthSlider     *widget.Slider
+    lengthValLbl     *widget.Label
+    tuneSlider       *widget.Slider
+    tuneValLbl       *widget.Label
+    toneSlider       *widget.Slider
+    toneValLbl       *widget.Label
+    snappySlider     *widget.Slider
+    snappyValLbl     *widget.Label
+    modRatioSlider   *widget.Slider
+    modRatioValLbl   *widget.Label
+    modIndexSlider   *widget.Slider
+    modIndexValLbl   *widget.Label
+    voicesSlider     *widget.Slider
+    voicesValLbl     *widget.Label
+    detuneSlider     *widget.Slider
+    detuneValLbl     *widget.Label
+    mixSlider        *widget.Slider
+    mixValLbl        *widget.Label
+    widthSlider      *widget.Slider
+    widthValLbl      *widget.Label
+    driftSlider      *widget.Slider
+    driftValLbl      *widget.Label
+    pulseWidthSlider *widget.Slider
+    pulseWidthValLbl *widget.Label
+    attackSlider     *widget.Slider
+    attackValLbl     *widget.Label
+    decaySlider      *widget.Slider
+    decayValLbl      *widget.Label
+    sustainSlider    *widget.Slider
+    sustainValLbl    *widget.Label
+    releaseSlider    *widget.Slider
+    releaseValLbl    *widget.Label
 
     // Action buttons & metadata entries
     playBtn     *widget.Button
@@ -795,10 +462,7 @@ type synthUI struct {
     metaAccordion *autoFitAccordion
     colComposer   *fyne.Container
     colUnison     *fyne.Container
-    colADSR       *fyne.Container
     topBar        *fyne.Container
-    topBarLine1   *fyne.Container
-    topBarLine2   *fyne.Container
 
     vizRateMu     sync.Mutex
     vizLastRender time.Time
@@ -831,6 +495,130 @@ type synthUI struct {
     playerLoopCheck    *widget.Check
     normValLbl         *widget.Label
     normSlider         *widget.Slider
+    userCurrentPath    string
+    baseWaveComposer   *fyne.Container
+    noiseSeedValLbl    *widget.Label
+    noiseSeedSlider    *widget.Slider
+    asdrCheck          *widget.Check
+    delayValLbl        *widget.Label
+    delaySlider        *widget.Slider
+    holdValLbl         *widget.Label
+    holdSlider         *widget.Slider
+    tenvCheck          *widget.Check
+    tenvSelect         *widget.Select
+    tenvValLbl         []*widget.Label
+    tenvSlider         []*widget.Slider
+    colTENV            *autoFitAccordion
+    colADSR            *autoFitAccordion
+    tenvBtn1           *widget.Button
+    tenvBtn2           *widget.Button
+    tenvBtn3           *widget.Button
+    dtoSelect          *widget.Select
+    colDTO             *autoFitAccordion
+    fmWaveComposer     *fyne.Container
+    fm1Select          *widget.Select
+    fm2Select          *widget.Select
+    cdmValLbl          *widget.Label
+    cdmSlider          *widget.Slider
+    rateValLbl         *widget.Label
+    rateSlider         *widget.Slider
+    soctValLbl         *widget.Label
+    soctSlider         *widget.Slider
+    driftDepthValLbl   *widget.Label
+    driftDepthSlider   *widget.Slider
+}
+
+func (ui *synthUI) syncParamsToUI(params SynthParams) {
+    if ui == nil {
+        return
+    }
+
+    prevApplying := ui.applyingState
+    ui.applyingState = true
+    defer func() {
+        ui.applyingState = prevApplying
+    }()
+
+    ui.params = params
+
+    // Selectors & checkboxes
+    setSelectValue(ui.srSelect, formatSampleRateOption(params.SampleRate))
+    setSelectValue(ui.waveSelect, params.BaseWave)
+    setSelectValue(ui.detuneCurveSelect, params.DetuneCurve)
+    setCheckValue(ui.subOctCheck, params.SubOctave > 0)
+    setCheckValue(ui.hardSyncCheck, params.HardSync)
+    setCheckValue(ui.asdrCheck, params.AsdrEnable)
+    setCheckValue(ui.tenvCheck, params.TenvEnable)
+    setSelectValue(ui.tenvSelect, params.TenvInterp)
+    setSelectValue(ui.dtoSelect, params.DtoStage)
+    setSelectValue(ui.fm1Select, params.Fm1Wave)
+    setSelectValue(ui.fm2Select, params.Fm2Wave)
+
+    // Sliders
+    setSliderValue(ui.lengthSlider, params.LengthMs)
+    setSliderValue(ui.tuneSlider, params.Tune)
+    setSliderValue(ui.toneSlider, params.Tone)
+    setSliderValue(ui.snappySlider, params.Snappy)
+    setSliderValue(ui.normSlider, float64(params.NormalizePct))
+    setSliderValue(ui.voicesSlider, float64(params.Voices))
+    setSliderValue(ui.detuneSlider, params.Detune)
+    setSliderValue(ui.mixSlider, params.DetuneMix)
+    setSliderValue(ui.widthSlider, params.StereoWidth)
+    setSliderValue(ui.driftSlider, params.AnalogDrift)
+    setSliderValue(ui.driftDepthSlider, params.AnalogDriftDepth)
+    setSliderValue(ui.soctSlider, params.SubOctave)
+    setSliderValue(ui.cdmSlider, params.CenterDelayMs)
+    setSliderValue(ui.rateSlider, params.DtoRate)
+    setSliderValue(ui.pulseWidthSlider, params.PulseWidth)
+    setSliderValue(ui.modRatioSlider, params.ModRatio)
+    setSliderValue(ui.modIndexSlider, params.ModIndex)
+    setSliderValue(ui.noiseSeedSlider, float64(params.Seed))
+
+    setSliderValue(ui.delaySlider, params.Delay)
+    setSliderValue(ui.attackSlider, params.Attack)
+    setSliderValue(ui.holdSlider, params.Hold)
+    setSliderValue(ui.decaySlider, params.Decay)
+    setSliderValue(ui.sustainSlider, params.Sustain)
+    setSliderValue(ui.releaseSlider, params.Release)
+
+    for i, s := range ui.tenvSlider {
+        var val float64
+        if i < len(params.Tenv) {
+            val = params.Tenv[i]
+        }
+        setSliderValue(s, val)
+    }
+}
+
+func setSelectValue(sel *widget.Select, val string) {
+    if sel == nil || val == "" {
+        return
+    }
+    for _, opt := range sel.Options {
+        if opt == val {
+            sel.SetSelected(val)
+            return
+        }
+    }
+}
+
+func setCheckValue(chk *widget.Check, checked bool) {
+    if chk != nil {
+        chk.SetChecked(checked)
+    }
+}
+
+func setSliderValue(s *widget.Slider, val float64) {
+    if s != nil {
+        s.SetValue(val)
+    }
+}
+
+func formatSampleRateOption(sr int) string {
+    if sr <= 0 {
+        return ""
+    }
+    return fmt.Sprintf("%d kHz", sr/1000)
 }
 
 // newSynthUI initializes defaults, loads XDG INI presets if present, and constructs all widgets.
@@ -842,51 +630,17 @@ func newSynthUI() *synthUI {
     w := a.NewWindow("SamplesComposer & Unison Synthesizer " + pkg.PkgVersion)
     w.SetFixedSize(false)
 
-    iniPath := resolvePresetsIniPath()
-    iniPresets, _ := loadPresetsFromINI(iniPath)
-    if iniPresets == nil {
-        iniPresets = make(map[string]SynthParams)
-    }
-
     ui := &synthUI{
-        app:        a,
-        window:     w,
-        vizMode:    "Waveform",
-        params:     defaultSynthParams(),
-        steps:      defaultSequenceSteps(),
-        iniPath:    iniPath,
-        iniPresets: iniPresets,
+        app:     a,
+        window:  w,
+        vizMode: "Waveform",
+        params:  defaultSynthParams(),
     }
 
     ui.initWidgets()
-    ui.refreshPresetOptions()
     ui.buildLayout()
     ui.regenerateNote()
     return ui
-}
-
-// refreshPresetOptions merges hardcoded presets with any presets loaded from presets.ini.
-func (ui *synthUI) refreshPresetOptions() {
-    if ui.presetCombo == nil {
-        return
-    }
-    seen := make(map[string]bool)
-    var options []string
-    for _, name := range hardcodedPresetNames {
-        options = append(options, name)
-        seen[name] = true
-    }
-    var iniNames []string
-    for name := range ui.iniPresets {
-        if !seen[name] {
-            iniNames = append(iniNames, name)
-            seen[name] = true
-        }
-    }
-    sort.Strings(iniNames)
-    options = append(options, iniNames...)
-    ui.presetCombo.SetOptions(options)
-    ui.presetCombo.Refresh()
 }
 
 // applyParamsToControls synchronizes all slider, selector, and checkbox widgets to p.
@@ -925,8 +679,8 @@ func (ui *synthUI) applyParamsToControls(p SynthParams) {
     ui.modIndexSlider.SetValue(p.ModIndex)
     ui.modIndexValLbl.SetText(fmt.Sprintf("%.2f", p.ModIndex))
 
-    ui.waveSelect.SetSelected(formatWaveformName(p.BaseWave))
-    ui.detuneCurveSelect.SetSelected(formatDetuneCurveName(&p.DetuneCurve))
+    ui.waveSelect.SetSelected(p.BaseWave)
+    //ui.detuneCurveSelect.SetSelected(formatDetuneCurveName(&p.DetuneCurve))
 
     ui.voicesSlider.SetValue(float64(p.Voices))
     ui.voicesValLbl.SetText(fmt.Sprintf("%d", p.Voices))
@@ -934,8 +688,8 @@ func (ui *synthUI) applyParamsToControls(p SynthParams) {
     ui.detuneSlider.SetValue(p.Detune)
     ui.detuneValLbl.SetText(fmt.Sprintf("%.2f", p.Detune))
 
-    ui.mixSlider.SetValue(p.Mix)
-    ui.mixValLbl.SetText(fmt.Sprintf("%.2f", p.Mix))
+    ui.mixSlider.SetValue(p.DetuneMix)
+    ui.mixValLbl.SetText(fmt.Sprintf("%.2f", p.DetuneMix))
 
     ui.widthSlider.SetValue(p.StereoWidth)
     ui.widthValLbl.SetText(fmt.Sprintf("%.2f", p.StereoWidth))
@@ -946,29 +700,18 @@ func (ui *synthUI) applyParamsToControls(p SynthParams) {
     ui.pulseWidthSlider.SetValue(p.PulseWidth)
     ui.pulseWidthValLbl.SetText(fmt.Sprintf("%.2f", p.PulseWidth))
 
-    ui.subOctCheck.SetChecked(p.SubOctave)
-    ui.hardSyncCheck.SetChecked(p.HardSync)
-
     ui.attackSlider.SetValue(p.Attack)
     ui.attackValLbl.SetText(fmt.Sprintf("%.3fs", p.Attack))
-    ui.attackCurveSelect.SetSelected(formatEnvelopeCurveName(p.AttackCurve, "Hermite"))
 
     ui.decaySlider.SetValue(p.Decay)
     ui.decayValLbl.SetText(fmt.Sprintf("%.2fs", p.Decay))
-    ui.decayCurveSelect.SetSelected(formatEnvelopeCurveName(p.DecayCurve, "Exponential"))
 
     ui.sustainSlider.SetValue(p.Sustain)
     ui.sustainValLbl.SetText(fmt.Sprintf("%.2f", p.Sustain))
 
     ui.releaseSlider.SetValue(p.Release)
     ui.releaseValLbl.SetText(fmt.Sprintf("%.2fs", p.Release))
-    ui.releaseCurveSelect.SetSelected(formatEnvelopeCurveName(p.ReleaseCurve, "Logarithmic"))
 
-    ui.wobbleCyclesSlider.SetValue(p.WobbleCycles)
-    ui.wobbleCyclesValLbl.SetText(fmt.Sprintf("%.1f", p.WobbleCycles))
-
-    ui.wobbleDepthSlider.SetValue(p.WobbleDepth)
-    ui.wobbleDepthValLbl.SetText(fmt.Sprintf("%.2f", p.WobbleDepth))
 }
 
 // applyPreset updates synthesizer parameters from either a hardcoded preset or an INI preset.
@@ -984,116 +727,9 @@ func (ui *synthUI) applyPreset(name string) {
     p := ui.params
     var sourceLabel string
 
-    switch trimmed {
-    case "Analog Trance Synth":
-        p.Voices = 7
-        p.Detune = 0.35
-        p.Mix = 0.75
-        p.StereoWidth = 0.0
-        p.SubOctave = false
-        p.BaseWave = xaudio.SawtoothPoly
-        p.DetuneCurve = xaudio.CurveJP8000
-        sourceLabel = "Internal Preset: Analog Trance Synth"
-    case "Hypersaw":
-        p.Voices = 9
-        p.Detune = 0.45
-        p.Mix = 0.85
-        p.StereoWidth = 0.90
-        p.SubOctave = true
-        p.BaseWave = xaudio.SawtoothPoly
-        p.DetuneCurve = xaudio.CurveJP8000
-        sourceLabel = "Internal Preset: Hypersaw"
-    case "MultiSaw":
-        p.Voices = 8
-        p.Detune = 0.30
-        p.Mix = 0.80
-        p.StereoWidth = 0.80
-        p.SubOctave = false
-        p.BaseWave = xaudio.SawtoothPoly
-        p.DetuneCurve = xaudio.CurveLinear
-        sourceLabel = "Internal Preset: MultiSaw"
-    default:
-        loaded, ok := ui.iniPresets[trimmed]
-        if !ok {
-            if fresh, err := loadPresetsFromINI(ui.iniPath); err == nil {
-                ui.iniPresets = fresh
-                ui.refreshPresetOptions()
-                loaded, ok = ui.iniPresets[trimmed]
-            }
-        }
-        if !ok {
-            return
-        }
-        p = loaded
-        sourceLabel = fmt.Sprintf("INI Preset: %s", trimmed)
-    }
-
     ui.applyParamsToControls(p)
     ui.statusLabel.SetText("Loaded " + sourceLabel)
     ui.regenerateNote()
-}
-
-// reloadPresetsFromConfig reloads presets.ini from the XDG user config directory.
-func (ui *synthUI) reloadPresetsFromConfig() {
-    presets, err := loadPresetsFromINI(ui.iniPath)
-    if err != nil {
-        if os.IsNotExist(err) {
-            ui.iniPresets = make(map[string]SynthParams)
-            ui.refreshPresetOptions()
-            ui.statusLabel.SetText("No presets.ini yet at " + ui.iniPath + " (hardcoded presets active)")
-            return
-        }
-        ui.statusLabel.SetText("INI load error: " + err.Error())
-        return
-    }
-    ui.iniPresets = presets
-    ui.refreshPresetOptions()
-    ui.statusLabel.SetText(fmt.Sprintf("Loaded %d INI preset(s) from %s", len(presets), ui.iniPath))
-}
-
-// saveCurrentPreset saves current synthesizer parameters under the combo box text into presets.ini.
-func (ui *synthUI) saveCurrentPreset() {
-    name := strings.TrimSpace(ui.presetCombo.Text)
-    if name == "" {
-        name = "Custom Preset"
-        ui.presetCombo.SetText(name)
-    }
-    if err := savePresetToINI(ui.iniPath, name, ui.params); err != nil {
-        ui.statusLabel.SetText("Save preset error: " + err.Error())
-        return
-    }
-    ui.iniPresets[name] = ui.params
-    ui.refreshPresetOptions()
-    ui.presetCombo.SetText(name)
-    ui.statusLabel.SetText(fmt.Sprintf("Saved preset [%s] to %s", name, ui.iniPath))
-}
-
-// deleteSelectedPreset removes the selected/entered INI preset from presets.ini in the XDG config dir.
-func (ui *synthUI) deleteSelectedPreset() {
-    name := strings.TrimSpace(ui.presetCombo.Text)
-    if name == "" {
-        ui.statusLabel.SetText("Select or enter an INI preset name to delete")
-        return
-    }
-    if isHardcodedPreset(name) {
-        ui.statusLabel.SetText(fmt.Sprintf("Preset [%s] is hardcoded and cannot be deleted from presets.ini", name))
-        return
-    }
-
-    deleted, err := removePresetFromINI(ui.iniPath, name)
-    if err != nil {
-        ui.statusLabel.SetText("Delete preset error: " + err.Error())
-        return
-    }
-    if !deleted {
-        ui.statusLabel.SetText(fmt.Sprintf("Preset [%s] not found in %s", name, ui.iniPath))
-        return
-    }
-
-    delete(ui.iniPresets, name)
-    ui.refreshPresetOptions()
-    ui.presetCombo.SetText("")
-    ui.statusLabel.SetText(fmt.Sprintf("Deleted INI preset [%s] from %s", name, ui.iniPath))
 }
 
 // fitWindowToContent sizes the window so all visible widgets fit without scrollbars.
@@ -1112,10 +748,6 @@ func (ui *synthUI) fitWindowToContent() {
 
 // resetAllToDefaults restores all SynthParams, widget controls, and timeline steps to initial defaults.
 func (ui *synthUI) resetAllToDefaults() {
-    ui.steps = defaultSequenceSteps()
-    if ui.presetCombo != nil {
-        ui.presetCombo.SetText("")
-    }
     ui.applyParamsToControls(defaultSynthParams())
     ui.regenerateNote()
     ui.fitWindowToContent()
@@ -1405,33 +1037,49 @@ func (ui *synthUI) redrawVisualization() {
     waveColor := color.RGBA{R: 0, G: 220, B: 180, A: 255}
     specColor := color.RGBA{R: 255, G: 140, B: 40, A: 255}
 
-    if ui.vizMode == "Waveform" {
-        numPoints := int(width / 3)
+    if strings.HasPrefix(ui.vizMode, "Waveform") {
+        numPoints := int(width)
         if numPoints < 60 {
             numPoints = 60
         }
-        if numPoints > 600 {
-            numPoints = 600
-        }
-        step := len(ui.currentSample) / 2 / numPoints
-        if step < 1 {
-            step = 1
-        }
+
+        sLen := len(ui.currentSample)
         midY := height / 2.0
-        dx := width / float32(numPoints)
-        var prevX, prevY float32
-        for i := 0; i < numPoints && (i*step*2) < len(ui.currentSample); i++ {
-            norm := float32(ui.currentSample[i*step*2]) / float32(math.MaxInt16)
-            x := float32(i) * dx
-            y := midY - (norm * (midY - 10))
-            if i > 0 {
-                line := canvas.NewLine(waveColor)
-                line.StrokeWidth = 2
-                line.Position1 = fyne.NewPos(prevX, prevY)
-                line.Position2 = fyne.NewPos(x, y)
-                ui.vizContainer.Add(line)
+        //dx := width / float32(sLen)
+        if ui.vizMode == "Waveform" {
+            var prevX, prevY float32
+            for i := 0; (i < sLen) && (i < int(width*10)); i++ {
+                n := float32(ui.currentSample[i]) / float32(math.MaxInt16)
+                x := float32(i / 10.0)
+                y := midY - (n * (midY - 10))
+                if i > 0 {
+                    line := canvas.NewLine(waveColor)
+                    line.StrokeWidth = 1
+                    line.Position1 = fyne.NewPos(prevX, prevY)
+                    line.Position2 = fyne.NewPos(x, y)
+                    ui.vizContainer.Add(line)
+                }
+                prevX, prevY = x, y
             }
-            prevX, prevY = x, y
+        } else {
+            step := sLen / numPoints
+            if step < 1 {
+                step = 1
+            }
+            var prevX, prevY float32
+            for i := 0; i < numPoints && (i*step) < sLen; i++ {
+                norm := float32(ui.currentSample[i*step]) / float32(math.MaxInt16)
+                x := float32(i) //* dx
+                y := midY - (norm * (midY - 10))
+                if i > 0 {
+                    line := canvas.NewLine(waveColor)
+                    line.StrokeWidth = 1
+                    line.Position1 = fyne.NewPos(prevX, prevY)
+                    line.Position2 = fyne.NewPos(x, y)
+                    ui.vizContainer.Add(line)
+                }
+                prevX, prevY = x, y
+            }
         }
     } else {
         bins := int(width / 16)
@@ -1614,331 +1262,37 @@ func (ui *synthUI) regenerateNote() {
 
 // initWidgets instantiates all interactive controls on synthUI.
 func (ui *synthUI) initWidgets() {
+    ui.presetSaveBtn = widget.NewButton("Save Preset", func() { ui.savePresets() })
+    ui.presetLoadBtn = widget.NewButton("Load Preset", func() { ui.loadPresets() })
+
     ui.statusLabel = widget.NewLabel("Ready")
 
     ui.vizBg = canvas.NewRectangle(color.RGBA{R: 18, G: 20, B: 26, A: 255})
     ui.vizContainer = container.New(&stretchVizLayout{ui: ui}, ui.vizBg)
 
-    ui.modeSelect = widget.NewSelect([]string{"Waveform", "Spectrum"}, func(s string) {
+    ui.modeSelect = widget.NewSelect([]string{"Waveform", "Waveform2", "Spectrum"}, func(s string) {
         ui.vizMode = s
         ui.redrawVisualization()
     })
     ui.modeSelect.SetSelected("Waveform")
 
-    ui.presetCombo = widget.NewSelectEntry(hardcodedPresetNames)
-    ui.presetCombo.PlaceHolder = "Select or type preset name..."
-    ui.presetCombo.OnChanged = func(s string) {
-        ui.applyPreset(s)
-    }
-    ui.presetCombo.OnSubmitted = func(s string) {
-        ui.applyPreset(s)
-    }
+    ui.buildFmWaveUI()
 
-    ui.savePresetBtn = widget.NewButton("Save", func() {
-        ui.saveCurrentPreset()
-    })
-    ui.loadPresetsBtn = widget.NewButton("Reload", func() {
-        ui.reloadPresetsFromConfig()
-    })
-    ui.deletePresetBtn = widget.NewButton("Remove", func() {
-        ui.deleteSelectedPreset()
-    })
+    // detune oversampling
+    ui.buildDetuneUI()
 
-    ui.srSelect = widget.NewSelect([]string{"8 kHz", "16 kHz", "32 kHz", "48 kHz"}, func(s string) {
-        khz, err := strconv.Atoi(strings.TrimSuffix(s, " kHz"))
-        if err == nil {
-            ui.params.SampleRate = khz * 1000
-            if !ui.applyingState {
-                ui.regenerateNote()
-            }
-        }
-    })
-    ui.srSelect.SetSelected("48 kHz")
+    //T-ENV
+    ui.buildTenvUI()
 
-    ui.lengthValLbl = widget.NewLabel(fmt.Sprintf("%.0f ms", ui.params.LengthMs))
-    ui.lengthSlider = widget.NewSlider(1000, 30000)
-    ui.lengthSlider.Step = 100
-    ui.lengthSlider.SetValue(ui.params.LengthMs)
-    ui.lengthSlider.OnChanged = func(v float64) {
-        ui.params.LengthMs = v
-        ui.lengthValLbl.SetText(fmt.Sprintf("%.0f ms", v))
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    }
-
-    ui.tuneValLbl = widget.NewLabel(fmt.Sprintf("%.2f Hz", ui.params.Tune))
-    ui.tuneSlider = widget.NewSlider(30.0, 880.0)
-    ui.tuneSlider.SetValue(ui.params.Tune)
-    ui.tuneSlider.OnChanged = func(v float64) {
-        ui.params.Tune = v
-        ui.tuneValLbl.SetText(fmt.Sprintf("%.2f Hz", v))
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    }
-
-    ui.toneValLbl = widget.NewLabel(fmt.Sprintf("%.2f", ui.params.Tone))
-    ui.toneSlider = widget.NewSlider(0.0, 6.0)
-    ui.toneSlider.Step = 0.01
-    ui.toneSlider.SetValue(ui.params.Tone)
-    ui.toneSlider.OnChanged = func(v float64) {
-        ui.params.Tone = v
-        ui.toneValLbl.SetText(fmt.Sprintf("%.2f", v))
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    }
-
-    ui.snappyValLbl = widget.NewLabel(fmt.Sprintf("%.2f", ui.params.Snappy))
-    ui.snappySlider = widget.NewSlider(0.0, 10.0)
-    ui.snappySlider.Step = 0.01
-    ui.snappySlider.SetValue(ui.params.Snappy)
-    ui.snappySlider.OnChanged = func(v float64) {
-        ui.params.Snappy = v
-        ui.snappyValLbl.SetText(fmt.Sprintf("%.2f", v))
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    }
-
-    ui.waveSelect = widget.NewSelect([]string{"Sine", "Sawtooth", "SawtoothPoly", "Square", "SquarePoly", "Triangle", "FM"}, func(s string) {
-        ui.params.BaseWave = resolveWaveform(s)
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    })
-    ui.waveSelect.SetSelected("SawtoothPoly")
-
-    ui.detuneCurveSelect = widget.NewSelect([]string{"Linear", "Analog Trance Synth", "Exponential"}, func(s string) {
-        ui.params.DetuneCurve = resolveDetuneCurve(s)
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    })
-    ui.detuneCurveSelect.SetSelected("Analog Trance Synth")
-
-    ui.voicesValLbl = widget.NewLabel(fmt.Sprintf("%d", ui.params.Voices))
-    ui.voicesSlider = widget.NewSlider(1, 16)
-    ui.voicesSlider.Step = 1
-    ui.voicesSlider.SetValue(float64(ui.params.Voices))
-    ui.voicesSlider.OnChanged = func(v float64) {
-        ui.params.Voices = int(v)
-        ui.voicesValLbl.SetText(fmt.Sprintf("%d", ui.params.Voices))
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    }
-
-    ui.detuneValLbl = widget.NewLabel(fmt.Sprintf("%.2f", ui.params.Detune))
-    ui.detuneSlider = widget.NewSlider(0.0, 1.0)
-    ui.detuneSlider.Step = 0.01
-    ui.detuneSlider.SetValue(ui.params.Detune)
-    ui.detuneSlider.OnChanged = func(v float64) {
-        ui.params.Detune = v
-        ui.detuneValLbl.SetText(fmt.Sprintf("%.2f", v))
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    }
-
-    ui.mixValLbl = widget.NewLabel(fmt.Sprintf("%.2f", ui.params.Mix))
-    ui.mixSlider = widget.NewSlider(0.0, 1.0)
-    ui.mixSlider.Step = 0.01
-    ui.mixSlider.SetValue(ui.params.Mix)
-    ui.mixSlider.OnChanged = func(v float64) {
-        ui.params.Mix = v
-        ui.mixValLbl.SetText(fmt.Sprintf("%.2f", v))
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    }
-
-    ui.widthValLbl = widget.NewLabel(fmt.Sprintf("%.2f", ui.params.StereoWidth))
-    ui.widthSlider = widget.NewSlider(0.0, 1.0)
-    ui.widthSlider.Step = 0.01
-    ui.widthSlider.SetValue(ui.params.StereoWidth)
-    ui.widthSlider.OnChanged = func(v float64) {
-        ui.params.StereoWidth = v
-        ui.widthValLbl.SetText(fmt.Sprintf("%.2f", v))
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    }
-
-    ui.driftValLbl = widget.NewLabel(fmt.Sprintf("%.2f", ui.params.AnalogDrift))
-    ui.driftSlider = widget.NewSlider(0.0, 1.0)
-    ui.driftSlider.Step = 0.01
-    ui.driftSlider.SetValue(ui.params.AnalogDrift)
-    ui.driftSlider.OnChanged = func(v float64) {
-        ui.params.AnalogDrift = v
-        ui.driftValLbl.SetText(fmt.Sprintf("%.2f", v))
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    }
-
-    ui.pulseWidthValLbl = widget.NewLabel(fmt.Sprintf("%.2f", ui.params.PulseWidth))
-    ui.pulseWidthSlider = widget.NewSlider(0.05, 0.95)
-    ui.pulseWidthSlider.Step = 0.01
-    ui.pulseWidthSlider.SetValue(ui.params.PulseWidth)
-    ui.pulseWidthSlider.OnChanged = func(v float64) {
-        ui.params.PulseWidth = v
-        ui.pulseWidthValLbl.SetText(fmt.Sprintf("%.2f", v))
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    }
-
-    ui.modRatioValLbl = widget.NewLabel(fmt.Sprintf("%.2f", ui.params.ModRatio))
-    ui.modRatioSlider = widget.NewSlider(0.01, 20.0)
-    ui.modRatioSlider.Step = 0.01
-    ui.modRatioSlider.SetValue(ui.params.ModRatio)
-    ui.modRatioSlider.OnChanged = func(v float64) {
-        ui.params.ModRatio = v
-        ui.modRatioValLbl.SetText(fmt.Sprintf("%.2f", v))
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    }
-
-    ui.modIndexValLbl = widget.NewLabel(fmt.Sprintf("%.2f", ui.params.ModIndex))
-    ui.modIndexSlider = widget.NewSlider(0.0, 20.0)
-    ui.modIndexSlider.Step = 0.01
-    ui.modIndexSlider.SetValue(ui.params.ModIndex)
-    ui.modIndexSlider.OnChanged = func(v float64) {
-        ui.params.ModIndex = v
-        ui.modIndexValLbl.SetText(fmt.Sprintf("%.2f", v))
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    }
-
-    ui.subOctCheck = widget.NewCheck("Sub-Octave (-1 Oct)", func(b bool) {
-        ui.params.SubOctave = b
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    })
-    ui.subOctCheck.SetChecked(ui.params.SubOctave)
-
-    ui.hardSyncCheck = widget.NewCheck("Hard Sync", func(b bool) {
-        ui.params.HardSync = b
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    })
-
-    curveOptions := []string{"Linear", "Exponential", "Logarithmic", "Hermite", "Radian", "BicubicWobble"}
-
-    ui.attackValLbl = widget.NewLabel(fmt.Sprintf("%.3fs", ui.params.Attack))
-    ui.attackSlider = widget.NewSlider(0.001, 2.0)
-    ui.attackSlider.Step = 0.005
-    ui.attackSlider.SetValue(ui.params.Attack)
-    ui.attackSlider.OnChanged = func(v float64) {
-        ui.params.Attack = v
-        ui.attackValLbl.SetText(fmt.Sprintf("%.3fs", v))
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    }
-
-    ui.decayValLbl = widget.NewLabel(fmt.Sprintf("%.2fs", ui.params.Decay))
-    ui.decaySlider = widget.NewSlider(0.01, 3.0)
-    ui.decaySlider.Step = 0.01
-    ui.decaySlider.SetValue(ui.params.Decay)
-    ui.decaySlider.OnChanged = func(v float64) {
-        ui.params.Decay = v
-        ui.decayValLbl.SetText(fmt.Sprintf("%.2fs", v))
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    }
-
-    ui.sustainValLbl = widget.NewLabel(fmt.Sprintf("%.2f", ui.params.Sustain))
-    ui.sustainSlider = widget.NewSlider(0.0, 1.0)
-    ui.sustainSlider.Step = 0.01
-    ui.sustainSlider.SetValue(ui.params.Sustain)
-    ui.sustainSlider.OnChanged = func(v float64) {
-        ui.params.Sustain = v
-        ui.sustainValLbl.SetText(fmt.Sprintf("%.2f", v))
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    }
-
-    ui.releaseValLbl = widget.NewLabel(fmt.Sprintf("%.2fs", ui.params.Release))
-    ui.releaseSlider = widget.NewSlider(0.01, 3.0)
-    ui.releaseSlider.Step = 0.01
-    ui.releaseSlider.SetValue(ui.params.Release)
-    ui.releaseSlider.OnChanged = func(v float64) {
-        ui.params.Release = v
-        ui.releaseValLbl.SetText(fmt.Sprintf("%.2fs", v))
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    }
-
-    ui.attackCurveSelect = widget.NewSelect(curveOptions, func(s string) {
-        ui.params.AttackCurve = resolveEnvelopeCurve(s, ui.params.WobbleCycles, ui.params.WobbleDepth)
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    })
-    ui.attackCurveSelect.SetSelected("Hermite")
-
-    ui.decayCurveSelect = widget.NewSelect(curveOptions, func(s string) {
-        ui.params.DecayCurve = resolveEnvelopeCurve(s, ui.params.WobbleCycles, ui.params.WobbleDepth)
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    })
-    ui.decayCurveSelect.SetSelected("Exponential")
-
-    ui.releaseCurveSelect = widget.NewSelect(curveOptions, func(s string) {
-        ui.params.ReleaseCurve = resolveEnvelopeCurve(s, ui.params.WobbleCycles, ui.params.WobbleDepth)
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    })
-    ui.releaseCurveSelect.SetSelected("Logarithmic")
-
-    ui.wobbleCyclesValLbl = widget.NewLabel(fmt.Sprintf("%.1f", ui.params.WobbleCycles))
-    ui.wobbleCyclesSlider = widget.NewSlider(0.1, 25.0)
-    ui.wobbleCyclesSlider.Step = 0.1
-    ui.wobbleCyclesSlider.SetValue(ui.params.WobbleCycles)
-    ui.wobbleCyclesSlider.OnChanged = func(v float64) {
-        ui.params.WobbleCycles = v
-        ui.wobbleCyclesValLbl.SetText(fmt.Sprintf("%.1f", v))
-        ui.params.AttackCurve = resolveEnvelopeCurve(ui.attackCurveSelect.Selected, ui.params.WobbleCycles, ui.params.WobbleDepth)
-        ui.params.DecayCurve = resolveEnvelopeCurve(ui.decayCurveSelect.Selected, ui.params.WobbleCycles, ui.params.WobbleDepth)
-        ui.params.ReleaseCurve = resolveEnvelopeCurve(ui.releaseCurveSelect.Selected, ui.params.WobbleCycles, ui.params.WobbleDepth)
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    }
-
-    ui.wobbleDepthValLbl = widget.NewLabel(fmt.Sprintf("%.2f", ui.params.WobbleDepth))
-    ui.wobbleDepthSlider = widget.NewSlider(0.0, 0.15)
-    ui.wobbleDepthSlider.Step = 0.01
-    ui.wobbleDepthSlider.SetValue(ui.params.WobbleDepth)
-    ui.wobbleDepthSlider.OnChanged = func(v float64) {
-        ui.params.WobbleDepth = v
-        ui.wobbleDepthValLbl.SetText(fmt.Sprintf("%.2f", v))
-        ui.params.AttackCurve = resolveEnvelopeCurve(ui.attackCurveSelect.Selected, ui.params.WobbleCycles, ui.params.WobbleDepth)
-        ui.params.DecayCurve = resolveEnvelopeCurve(ui.decayCurveSelect.Selected, ui.params.WobbleCycles, ui.params.WobbleDepth)
-        ui.params.ReleaseCurve = resolveEnvelopeCurve(ui.releaseCurveSelect.Selected, ui.params.WobbleCycles, ui.params.WobbleDepth)
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    }
+    //ASDR
+    ui.buildAsdrUI()
 
     ui.titleEntry = widget.NewEntry()
-    ui.titleEntry.SetText("Sample Composer Unison Sequence")
+    ui.titleEntry.SetText("SamplesComposer Sample")
     ui.artistEntry = widget.NewEntry()
-    ui.artistEntry.SetText("xaudio Synth")
+    ui.artistEntry.SetText("SamplesComposer Synth")
     ui.descEntry = widget.NewEntry()
-    ui.descEntry.SetText("Generated with gommons xaudio RenderSequence")
+    ui.descEntry.SetText("Generated with github.com/terefang/SamplesComposer")
 
     ui.playBtn = widget.NewButton("Play Note", func() {
         ui.regenerateNote()
@@ -1946,42 +1300,10 @@ func (ui *synthUI) initWidgets() {
         ui.statusLabel.SetText("Playing synthesized note via malgo")
     })
 
-    ui.saveBtn = widget.NewButton("Save Sample", func() {
-        dlg := dialog.NewFileSave(func(writer fyne.URIWriteCloser, err error) {
-            if err != nil {
-                ui.statusLabel.SetText("Save dialog error: " + err.Error())
-                return
-            }
-            if writer == nil {
-                // User cancelled the dialog
-                return
-            }
-            outPath := writer.URI().Path()
-            _ = writer.Close()
-
-            if strings.ToLower(filepath.Ext(outPath)) != ".wav" {
-                outPath += ".wav"
-            }
-
-            meta := xaudio.WavMetadata{
-                Title:       ui.titleEntry.Text,
-                Artist:      ui.artistEntry.Text,
-                Description: ui.descEntry.Text,
-                Software:    "SampleComposer Fyne Synth",
-                Date:        "2026-11-19",
-            }
-
-            if err := xaudio.WriteWavWithMetadata(outPath, ui.params.SampleRate, 2, ui.currentSample, meta); err != nil {
-                ui.statusLabel.SetText("Save error: " + err.Error())
-                return
-            }
-            ui.statusLabel.SetText("Saved " + outPath + " with RIFF INFO metadata")
-        }, ui.window)
-
-        dlg.SetFileName("sample_composer_output.wav")
-        dlg.SetFilter(storage.NewExtensionFileFilter([]string{".wav"}))
-        dlg.Show()
-    })
+    if ui.userCurrentPath == "" {
+        ui.userCurrentPath, _ = os.UserHomeDir()
+    }
+    ui.saveBtn = widget.NewButton("Save Sample", ui.saveWavFile())
 
     ui.resetBtn = widget.NewButton("Reset Defaults", func() {
         ui.resetAllToDefaults()
@@ -2012,32 +1334,65 @@ func (ui *synthUI) initWidgets() {
     ui.playerBar = container.NewBorder(
         nil, nil,
         container.NewVBox(
-
             ui.playerPlayPauseBtn,
             ui.playerStopBtn,
+        ),
+        container.NewVBox(
+            ui.playerTimeLabel,
             ui.playerLoopCheck,
         ),
-        ui.playerTimeLabel,
         container.NewVBox(ui.playerProgressBar, ui.playerSeekSlider),
     )
 
-    formatNormLabel := func(v float64) string {
-        if v <= 0 {
-            return "Off"
-        }
-        return fmt.Sprintf("%.0f%%", v)
-    }
+}
 
-    ui.normValLbl = widget.NewLabel(formatNormLabel(float64(ui.params.NormalizePct)))
-    ui.normSlider = widget.NewSlider(0, 100)
-    ui.normSlider.Step = 1.0
-    ui.normSlider.SetValue(float64(ui.params.NormalizePct))
-    ui.normSlider.OnChanged = func(v float64) {
-        ui.params.NormalizePct = int64(v)
-        ui.normValLbl.SetText(formatNormLabel(v))
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
+func (ui *synthUI) saveWavFile() func() {
+    return func() {
+        _dialog := xfyne.NewSelectDialog(
+            "Select File to Save ...",
+            ui.userCurrentPath,
+            false,
+            func(outPath string) {
+
+                if strings.ToLower(filepath.Ext(outPath)) != ".wav" {
+                    outPath += ".wav"
+                }
+
+                text, _ := json.Marshal(ui.params)
+                meta := xaudio.WavMetadata{
+                    Title:       ui.titleEntry.Text,
+                    Artist:      ui.artistEntry.Text,
+                    Description: ui.descEntry.Text,
+                    Software:    "SampleComposer Fyne Synth",
+                    Date:        "2026-11-19",
+                    Text:        text,
+                }
+
+                if err := xaudio.WriteWavWithMetadata(outPath, ui.params.SampleRate, 2, ui.currentSample, meta); err != nil {
+                    ui.statusLabel.SetText("Save error: " + err.Error())
+                    return
+                }
+                ui.statusLabel.SetText("Saved " + outPath + " with RIFF INFO metadata")
+
+            },
+            func() {
+                ui.statusLabel.SetText("Save dialog error: Dialog cancelled")
+            },
+        )
+        _dialog.SetPreferredDirs(
+            xdg.DocumentsPath("Samples"),
+            xdg.DocumentsPath("Music"),
+            xdg.DocumentsDir(),
+            xdg.ProjectsPath("Samples"),
+            xdg.ProjectsPath("Music"),
+            xdg.ProjectsDir(),
+            xdg.DownloadDir(),
+            xdg.DesktopDir())
+
+        _dialog.SetAction("Save")
+        _dialog.SetFileName(fmt.Sprintf("%s_%dHz_%dpw_0x%08X_%s.wav", ui.params.BaseWave, int(ui.params.Tune), int(ui.params.PulseWidth*100), ui.params.Seed, ui.params.DtoStage))
+        _dialog.AddFileTypeFilter("Wave Files (*.wav)", storage.NewExtensionFileFilter([]string{".wav"}))
+        _dialog.Show()
     }
 }
 
@@ -2125,46 +1480,110 @@ func makeParameterRow(labelText string, input fyne.CanvasObject, valLabel *widge
     return container.NewBorder(nil, nil, widget.NewLabel(labelText), right, center)
 }
 
+func makeHSliderPlusMinus(slider *widget.Slider) *fyne.Container {
+    step := slider.Step
+    if step <= 0 {
+        step = 1.0
+    }
+    decBtn := widget.NewButton("-", func() {
+        next := slider.Value - step
+        if next < slider.Min {
+            next = slider.Min
+        }
+        next = math.Round(next*1e6) / 1e6
+        slider.SetValue(next)
+    })
+    incBtn := widget.NewButton("+", func() {
+        next := slider.Value + step
+        if next > slider.Max {
+            next = slider.Max
+        }
+        next = math.Round(next*1e6) / 1e6
+        slider.SetValue(next)
+    })
+    return container.NewBorder(nil, nil, decBtn, incBtn, slider)
+}
+
+func makeVSliderPlusMinus(slider *widget.Slider) *fyne.Container {
+    step := slider.Step
+    if step <= 0 {
+        step = 1.0
+    }
+    decBtn := widget.NewButton("-", func() {
+        next := slider.Value - step
+        if next < slider.Min {
+            next = slider.Min
+        }
+        next = math.Round(next*1e6) / 1e6
+        slider.SetValue(next)
+    })
+    incBtn := widget.NewButton("+", func() {
+        next := slider.Value + step
+        if next > slider.Max {
+            next = slider.Max
+        }
+        next = math.Round(next*1e6) / 1e6
+        slider.SetValue(next)
+    })
+    return container.NewBorder(incBtn, decBtn, nil, nil, slider)
+}
+
+func makeVSliderPlusMinus2(slider *widget.Slider) *fyne.Container {
+    step := slider.Step
+    if step <= 0 {
+        step = 1.0
+    }
+    decBtn := widget.NewButton("-", func() {
+        next := slider.Value - step
+        if next < slider.Min {
+            next = slider.Min
+        }
+        next = math.Round(next*1e3) / 1e3
+        slider.SetValue(next)
+    })
+    dec2Btn := widget.NewButton("--", func() {
+        next := (slider.Value + slider.Min) / 2
+        if next < slider.Min {
+            next = slider.Min
+        }
+        next = math.Round(next*1e3) / 1e3
+        slider.SetValue(next)
+    })
+    incBtn := widget.NewButton("+", func() {
+        next := slider.Value + step
+        if next > slider.Max {
+            next = slider.Max
+        }
+        next = math.Round(next*1e3) / 1e3
+        slider.SetValue(next)
+    })
+    inc2Btn := widget.NewButton("++", func() {
+        next := (slider.Value + slider.Max) / 2
+        if next > slider.Max {
+            next = slider.Max
+        }
+        next = math.Round(next*1e3) / 1e3
+        slider.SetValue(next)
+    })
+    x0Btn := widget.NewButton("0", func() {
+        slider.SetValue(0)
+    })
+    x1Btn := widget.NewButton("M", func() {
+        slider.SetValue(slider.Min)
+    })
+    x2Btn := widget.NewButton("X", func() {
+        slider.SetValue(slider.Max)
+    })
+    return container.NewBorder(
+        container.NewVBox(inc2Btn, incBtn),
+        container.NewVBox(decBtn, dec2Btn, container.NewAdaptiveGrid(2, x0Btn, x1Btn, x2Btn)),
+        nil, nil, slider)
+}
+
 // buildLayout arranges the toolbar, parameter columns, independently collapsible Sequence,
 // Meta-Data, and Visualization accordions directly into the window without scrollbars.
 func (ui *synthUI) buildLayout() {
-    ui.colComposer = container.NewVBox(
-        widget.NewLabelWithStyle("Sample Composer & Format", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-        makeParameterRow("Sample Rate", ui.srSelect, nil),
-        makeParameterRow("Sample Length", ui.lengthSlider, ui.lengthValLbl),
-        makeParameterRow("Tune", ui.tuneSlider, ui.tuneValLbl),
-        makeParameterRow("Tone", ui.toneSlider, ui.toneValLbl),
-        makeParameterRow("Snappy", ui.snappySlider, ui.snappyValLbl),
-        makeParameterRow("FM Mod Ratio", ui.modRatioSlider, ui.modRatioValLbl),
-        makeParameterRow("FM Mod Index", ui.modIndexSlider, ui.modIndexValLbl),
-        makeParameterRow("Normalize", ui.normSlider, ui.normValLbl),
-    )
-
-    ui.colUnison = container.NewVBox(
-        widget.NewLabelWithStyle("xaudio Unison & DetuneCurve", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-        makeParameterRow("Waveform", ui.waveSelect, nil),
-        makeParameterRow("Detune Curve", ui.detuneCurveSelect, nil),
-        makeParameterRow("Voices", ui.voicesSlider, ui.voicesValLbl),
-        makeParameterRow("Detune", ui.detuneSlider, ui.detuneValLbl),
-        makeParameterRow("Mix", ui.mixSlider, ui.mixValLbl),
-        makeParameterRow("Stereo Width", ui.widthSlider, ui.widthValLbl),
-        makeParameterRow("Analog Drift", ui.driftSlider, ui.driftValLbl),
-        makeParameterRow("Pulse Width", ui.pulseWidthSlider, ui.pulseWidthValLbl),
-        container.NewHBox(ui.subOctCheck, ui.hardSyncCheck),
-    )
-
-    ui.colADSR = container.NewVBox(
-        widget.NewLabelWithStyle("xaudio ADSR & EnvelopeCurve", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-        makeParameterRow("Attack", ui.attackSlider, ui.attackValLbl),
-        makeParameterRow("Attack Curve", ui.attackCurveSelect, nil),
-        makeParameterRow("Decay", ui.decaySlider, ui.decayValLbl),
-        makeParameterRow("Decay Curve", ui.decayCurveSelect, nil),
-        makeParameterRow("Sustain", ui.sustainSlider, ui.sustainValLbl),
-        makeParameterRow("Release", ui.releaseSlider, ui.releaseValLbl),
-        makeParameterRow("Release Curve", ui.releaseCurveSelect, nil),
-        makeParameterRow("Wobble Cycles", ui.wobbleCyclesSlider, ui.wobbleCyclesValLbl),
-        makeParameterRow("Wobble Depth", ui.wobbleDepthSlider, ui.wobbleDepthValLbl),
-    )
+    ui.buildBaseWaveUI()
 
     // Standalone Meta-Data accordion that auto-fits the window when opened or closed
     ui.metaContent = container.NewVBox(
@@ -2198,26 +1617,12 @@ func (ui *synthUI) buildLayout() {
     )
     ui.vizAccordion.Open(0)
 
-    ui.topBarLine1 = container.NewBorder(nil, nil,
-        widget.NewLabel("Preset:"),
-        container.NewHBox(
-            ui.savePresetBtn,
-            ui.deletePresetBtn,
-            ui.loadPresetsBtn,
-        ),
-        ui.presetCombo,
-    )
-    ui.topBarLine2 = container.NewBorder(nil, nil,
-        nil,
+    ui.topBar = container.NewGridWithColumns(5,
+        ui.playBtn,
         ui.resetBtn,
-        container.NewHBox(
-            ui.playBtn,
-            ui.saveBtn,
-        ),
-    )
-    ui.topBar = container.NewVBox(
-        ui.topBarLine1,
-        ui.topBarLine2,
+        ui.saveBtn,
+        ui.presetSaveBtn,
+        ui.presetLoadBtn,
     )
 
     bottomBar := container.NewVBox(
@@ -2228,7 +1633,8 @@ func (ui *synthUI) buildLayout() {
     root := container.NewBorder(
         container.NewVBox(
             ui.topBar,
-            container.NewGridWithColumns(3, ui.colComposer, ui.colUnison, ui.colADSR),
+            ui.baseWaveComposer,
+            container.NewVBox(ui.fmWaveComposer, ui.colDTO, ui.colADSR, ui.colTENV),
             ui.metaAccordion,
         ),
         bottomBar, nil, nil,
@@ -2243,6 +1649,689 @@ func (ui *synthUI) buildLayout() {
             ui.malgoCtx.Free()
         }
     })
+}
+func (ui *synthUI) buildTenvUI() {
+    ui.tenvCheck = widget.NewCheck("T-Env Enable", func(checked bool) {
+        ui.params.TenvEnable = checked
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    })
+
+    ui.tenvSelect = widget.NewSelect(xoscillator.EnvelopeInterpolatorNames(), func(s string) {
+        ui.params.TenvInterp = s
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    })
+
+    ui.tenvBtn1 = widget.NewButton("Zero All", func() {
+        for i := 0; i < 16; i++ {
+            ui.tenvSlider[i].SetValue(0)
+        }
+    })
+    ui.tenvBtn2 = widget.NewButton("Max All", func() {
+        for i := 0; i < 16; i++ {
+            ui.tenvSlider[i].SetValue(1.0)
+        }
+    })
+    ui.tenvBtn3 = widget.NewButton("Min All", func() {
+        for i := 0; i < 16; i++ {
+            ui.tenvSlider[i].SetValue(-1.0)
+        }
+    })
+
+    ui.tenvValLbl = make([]*widget.Label, 16)
+    ui.tenvSlider = make([]*widget.Slider, 16)
+    for i := 0; i < 16; i++ {
+        ui.tenvValLbl[i] = widget.NewLabel(fmt.Sprintf("%.3f", ui.params.Tenv[i]))
+        ui.tenvSlider[i] = widget.NewSlider(-1.0, 1.0)
+        ui.tenvSlider[i].Step = 0.005
+        ui.tenvSlider[i].Orientation = widget.Vertical
+        ui.tenvSlider[i].SetValue(ui.params.Tenv[i])
+        ui.tenvSlider[i].OnChanged = func(v float64) {
+            ui.params.Tenv[i] = v
+            ui.tenvValLbl[i].SetText(fmt.Sprintf("%.3f", v))
+            if !ui.applyingState {
+                ui.regenerateNote()
+            }
+        }
+    }
+
+    envContent := container.NewVBox(
+        container.NewHBox(ui.tenvCheck, ui.tenvSelect, ui.tenvBtn1, ui.tenvBtn2, ui.tenvBtn3),
+        container.NewGridWithColumns(16,
+            container.NewVBox(ui.tenvValLbl[0], makeVSliderPlusMinus2(ui.tenvSlider[0])),
+            container.NewVBox(ui.tenvValLbl[1], makeVSliderPlusMinus2(ui.tenvSlider[1])),
+            container.NewVBox(ui.tenvValLbl[2], makeVSliderPlusMinus2(ui.tenvSlider[2])),
+            container.NewVBox(ui.tenvValLbl[3], makeVSliderPlusMinus2(ui.tenvSlider[3])),
+            container.NewVBox(ui.tenvValLbl[4], makeVSliderPlusMinus2(ui.tenvSlider[4])),
+            container.NewVBox(ui.tenvValLbl[5], makeVSliderPlusMinus2(ui.tenvSlider[5])),
+            container.NewVBox(ui.tenvValLbl[6], makeVSliderPlusMinus2(ui.tenvSlider[6])),
+            container.NewVBox(ui.tenvValLbl[7], makeVSliderPlusMinus2(ui.tenvSlider[7])),
+            container.NewVBox(ui.tenvValLbl[8], makeVSliderPlusMinus2(ui.tenvSlider[8])),
+            container.NewVBox(ui.tenvValLbl[9], makeVSliderPlusMinus2(ui.tenvSlider[9])),
+            container.NewVBox(ui.tenvValLbl[10], makeVSliderPlusMinus2(ui.tenvSlider[10])),
+            container.NewVBox(ui.tenvValLbl[11], makeVSliderPlusMinus2(ui.tenvSlider[11])),
+            container.NewVBox(ui.tenvValLbl[12], makeVSliderPlusMinus2(ui.tenvSlider[12])),
+            container.NewVBox(ui.tenvValLbl[13], makeVSliderPlusMinus2(ui.tenvSlider[13])),
+            container.NewVBox(ui.tenvValLbl[14], makeVSliderPlusMinus2(ui.tenvSlider[14])),
+            container.NewVBox(ui.tenvValLbl[15], makeVSliderPlusMinus2(ui.tenvSlider[15])),
+        ),
+    )
+    ui.colTENV = newAutoFitAccordion(
+        func() { ui.fitWindowToContent() },
+        "T16-Envelope",
+        envContent,
+    )
+}
+
+func (ui *synthUI) buildDetuneUI() {
+    dtonames := make([]string, 0)
+    dtonames = append(dtonames, "off")
+    dtonames = append(dtonames, xoscillator.AnalogSynthDetunePresetNames()...)
+    ui.dtoSelect = widget.NewSelect(dtonames, func(s string) {
+        ui.params.DtoStage = s
+        if xoscillator.HasAnalogSynthDetunePreset(s) {
+            dto, _ := xoscillator.LookupAnalogSynthDetunePreset(s)
+            ui.voicesSlider.SetValue(float64(dto.Voices))
+            ui.detuneSlider.SetValue(float64(dto.Detune))
+            ui.mixSlider.SetValue(float64(dto.Mix))
+            ui.cdmSlider.SetValue(float64(dto.CenterDelayMs))
+            ui.rateSlider.SetValue(float64(dto.Rate))
+            ui.driftSlider.SetValue(float64(dto.AnalogDrift))
+            ui.driftDepthSlider.SetValue(float64(dto.AnalogDriftDepth))
+            ui.detuneCurveSelect.SetSelectedIndex(int(dto.DetuneCurve))
+            ui.widthSlider.SetValue(float64(dto.StereoWidth))
+            ui.soctSlider.SetValue(float64(dto.SubOctave))
+        }
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    })
+    ui.dtoSelect.SetSelected(dtonames[0])
+
+    ui.mixValLbl = widget.NewLabel(fmt.Sprintf("%.2f", ui.params.DetuneMix))
+    ui.mixSlider = widget.NewSlider(0.0, 1.0)
+    ui.mixSlider.Step = 0.01
+    ui.mixSlider.SetValue(ui.params.DetuneMix)
+    ui.mixSlider.OnChanged = func(v float64) {
+        ui.params.DetuneMix = v
+        ui.mixValLbl.SetText(fmt.Sprintf("%.2f", v))
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    }
+
+    ui.widthValLbl = widget.NewLabel(fmt.Sprintf("%.2f", ui.params.StereoWidth))
+    ui.widthSlider = widget.NewSlider(0.0, 1.0)
+    ui.widthSlider.Step = 0.01
+    ui.widthSlider.SetValue(ui.params.StereoWidth)
+    ui.widthSlider.OnChanged = func(v float64) {
+        ui.params.StereoWidth = v
+        ui.widthValLbl.SetText(fmt.Sprintf("%.2f", v))
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    }
+
+    ui.voicesValLbl = widget.NewLabel(fmt.Sprintf("%d", ui.params.Voices))
+    ui.voicesSlider = widget.NewSlider(0, 16)
+    ui.voicesSlider.Step = 1
+    ui.voicesSlider.SetValue(float64(ui.params.Voices))
+    ui.voicesSlider.OnChanged = func(v float64) {
+        ui.params.Voices = int(v)
+        ui.voicesValLbl.SetText(fmt.Sprintf("%d", ui.params.Voices))
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    }
+
+    ui.detuneCurveSelect = widget.NewSelect(xoscillator.DetuneCurveNames(), func(s string) {
+        ui.params.DetuneCurve = s
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    })
+    ui.detuneCurveSelect.SetSelected("Analog Trance Synth")
+
+    ui.detuneValLbl = widget.NewLabel(fmt.Sprintf("%.2f", ui.params.Detune))
+    ui.detuneSlider = widget.NewSlider(0.0, 2.0)
+    ui.detuneSlider.Step = 0.01
+    ui.detuneSlider.SetValue(ui.params.Detune)
+    ui.detuneSlider.OnChanged = func(v float64) {
+        ui.params.Detune = v
+        ui.detuneValLbl.SetText(fmt.Sprintf("%.2f", v))
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    }
+
+    ui.driftValLbl = widget.NewLabel(fmt.Sprintf("%.2f", ui.params.AnalogDrift))
+    ui.driftSlider = widget.NewSlider(0.0, 1.0)
+    ui.driftSlider.Step = 0.01
+    ui.driftSlider.SetValue(ui.params.AnalogDrift)
+    ui.driftSlider.OnChanged = func(v float64) {
+        ui.params.AnalogDrift = v
+        ui.driftValLbl.SetText(fmt.Sprintf("%.2f", v))
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    }
+
+    ui.driftDepthValLbl = widget.NewLabel(fmt.Sprintf("%.2fppt", ui.params.AnalogDriftDepth*1000))
+    ui.driftDepthSlider = widget.NewSlider(0.0, 1.0)
+    ui.driftDepthSlider.Step = 0.0001
+    ui.driftDepthSlider.SetValue(ui.params.AnalogDriftDepth)
+    ui.driftDepthSlider.OnChanged = func(v float64) {
+        ui.params.AnalogDriftDepth = v
+        ui.driftDepthValLbl.SetText(fmt.Sprintf("%.2fppt", v*1000))
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    }
+
+    ui.cdmValLbl = widget.NewLabel(fmt.Sprintf("%.2fms", ui.params.CenterDelayMs))
+    ui.cdmSlider = widget.NewSlider(0.0, 1.0)
+    ui.cdmSlider.Step = 0.01
+    ui.cdmSlider.SetValue(ui.params.CenterDelayMs)
+    ui.cdmSlider.OnChanged = func(v float64) {
+        ui.params.CenterDelayMs = v
+        ui.cdmValLbl.SetText(fmt.Sprintf("%.2fms", v))
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    }
+
+    ui.rateValLbl = widget.NewLabel(fmt.Sprintf("%.2fHz", ui.params.DtoRate))
+    ui.rateSlider = widget.NewSlider(0.0, 1.0)
+    ui.rateSlider.Step = 0.01
+    ui.rateSlider.SetValue(ui.params.DtoRate)
+    ui.rateSlider.OnChanged = func(v float64) {
+        ui.params.DtoRate = v
+        ui.rateValLbl.SetText(fmt.Sprintf("%.2fHz", v))
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    }
+
+    ui.soctValLbl = widget.NewLabel(fmt.Sprintf("%.3f", ui.params.SubOctave))
+    ui.soctSlider = widget.NewSlider(-10.0, 10.0)
+    ui.soctSlider.Step = 0.01
+    ui.soctSlider.SetValue(ui.params.SubOctave)
+    ui.soctSlider.OnChanged = func(v float64) {
+        ui.params.SubOctave = v
+        ui.soctValLbl.SetText(fmt.Sprintf("%.3f", v))
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    }
+
+    dtoContent := container.NewVBox(
+        container.NewGridWithColumns(2,
+            xfyne.NewVariableGrid([]float32{0.3, 0.7},
+                widget.NewLabel("Detune Preset"), ui.dtoSelect,
+            ),
+            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+                widget.NewLabel("Voices"), makeHSliderPlusMinus(ui.voicesSlider), ui.voicesValLbl,
+            ),
+            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+                widget.NewLabel("Detune Amount"), makeHSliderPlusMinus(ui.detuneSlider), ui.detuneValLbl,
+            ),
+            xfyne.NewVariableGrid([]float32{0.3, 0.7},
+                widget.NewLabel("Detune Curve"), ui.detuneCurveSelect,
+            ),
+            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+                widget.NewLabel("Detune Mix"), makeHSliderPlusMinus(ui.mixSlider), ui.mixValLbl,
+            ),
+            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+                widget.NewLabel("Detune Rate"), makeHSliderPlusMinus(ui.rateSlider), ui.rateValLbl,
+            ),
+            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+                widget.NewLabel("Stereo Width"), makeHSliderPlusMinus(ui.widthSlider), ui.widthValLbl,
+            ),
+            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+                widget.NewLabel("Centre Delay"), makeHSliderPlusMinus(ui.cdmSlider), ui.cdmValLbl,
+            ),
+            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+                widget.NewLabel("Analog Drift"), makeHSliderPlusMinus(ui.driftSlider), ui.driftValLbl,
+            ),
+            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+                widget.NewLabel("Drift Depth"), makeHSliderPlusMinus(ui.driftDepthSlider), ui.driftDepthValLbl,
+            ),
+            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+                widget.NewLabel("Sub-Octaves"), makeHSliderPlusMinus(ui.soctSlider), ui.soctValLbl,
+            ),
+        ),
+    )
+    ui.colDTO = newAutoFitAccordion(
+        func() { ui.fitWindowToContent() },
+        "Detune/Oversample",
+        dtoContent,
+    )
+
+}
+
+func (ui *synthUI) buildAsdrUI() {
+    ui.asdrCheck = widget.NewCheck("ASDR Enable", func(checked bool) {
+        ui.params.AsdrEnable = checked
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    })
+
+    ui.delayValLbl = widget.NewLabel(fmt.Sprintf("%.3fs", ui.params.Delay))
+    ui.delaySlider = widget.NewSlider(0.001, 10.0)
+    ui.delaySlider.Step = 0.005
+    ui.delaySlider.SetValue(ui.params.Delay)
+    ui.delaySlider.OnChanged = func(v float64) {
+        ui.params.Delay = v
+        ui.delayValLbl.SetText(fmt.Sprintf("%.3fs", v))
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    }
+
+    ui.holdValLbl = widget.NewLabel(fmt.Sprintf("%.3fs", ui.params.Hold))
+    ui.holdSlider = widget.NewSlider(0.001, 10.0)
+    ui.holdSlider.Step = 0.005
+    ui.holdSlider.SetValue(ui.params.Hold)
+    ui.holdSlider.OnChanged = func(v float64) {
+        ui.params.Hold = v
+        ui.holdValLbl.SetText(fmt.Sprintf("%.3fs", v))
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    }
+
+    ui.attackValLbl = widget.NewLabel(fmt.Sprintf("%.3fs", ui.params.Attack))
+    ui.attackSlider = widget.NewSlider(0.001, 2.0)
+    ui.attackSlider.Step = 0.005
+    ui.attackSlider.SetValue(ui.params.Attack)
+    ui.attackSlider.OnChanged = func(v float64) {
+        ui.params.Attack = v
+        ui.attackValLbl.SetText(fmt.Sprintf("%.3fs", v))
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    }
+
+    ui.decayValLbl = widget.NewLabel(fmt.Sprintf("%.2fs", ui.params.Decay))
+    ui.decaySlider = widget.NewSlider(0.01, 3.0)
+    ui.decaySlider.Step = 0.01
+    ui.decaySlider.SetValue(ui.params.Decay)
+    ui.decaySlider.OnChanged = func(v float64) {
+        ui.params.Decay = v
+        ui.decayValLbl.SetText(fmt.Sprintf("%.2fs", v))
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    }
+
+    ui.sustainValLbl = widget.NewLabel(fmt.Sprintf("%.2f%%", (ui.params.Sustain * 100.0)))
+    ui.sustainSlider = widget.NewSlider(0.0, 1.0)
+    ui.sustainSlider.Step = 0.01
+    ui.sustainSlider.SetValue(ui.params.Sustain)
+    ui.sustainSlider.OnChanged = func(v float64) {
+        ui.params.Sustain = v
+        ui.sustainValLbl.SetText(fmt.Sprintf("%.2f%%", (v * 100.0)))
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    }
+
+    ui.releaseValLbl = widget.NewLabel(fmt.Sprintf("%.2fs", ui.params.Release))
+    ui.releaseSlider = widget.NewSlider(0.01, 3.0)
+    ui.releaseSlider.Step = 0.01
+    ui.releaseSlider.SetValue(ui.params.Release)
+    ui.releaseSlider.OnChanged = func(v float64) {
+        ui.params.Release = v
+        ui.releaseValLbl.SetText(fmt.Sprintf("%.2fs", v))
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    }
+
+    adsrContent := container.NewVBox(
+        ui.asdrCheck,
+        container.NewGridWithColumns(2,
+            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+                widget.NewLabel("Delay"), makeHSliderPlusMinus(ui.delaySlider), ui.delayValLbl,
+            ),
+            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+                widget.NewLabel("Attack"), makeHSliderPlusMinus(ui.attackSlider), ui.attackValLbl,
+            ),
+            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+                widget.NewLabel("Hold"), makeHSliderPlusMinus(ui.holdSlider), ui.holdValLbl,
+            ),
+            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+                widget.NewLabel("Decay"), makeHSliderPlusMinus(ui.decaySlider), ui.decayValLbl,
+            ),
+            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+                widget.NewLabel("Sustain"), makeHSliderPlusMinus(ui.sustainSlider), ui.sustainValLbl,
+            ),
+            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+                widget.NewLabel("Release"), makeHSliderPlusMinus(ui.releaseSlider), ui.releaseValLbl,
+            ),
+        ),
+    )
+
+    ui.colADSR = newAutoFitAccordion(
+        func() { ui.fitWindowToContent() },
+        "ADSR/Envelope",
+        adsrContent,
+    )
+
+}
+
+func (ui *synthUI) buildFmWaveUI() {
+    ui.toneValLbl = widget.NewLabel(fmt.Sprintf("%.2f", ui.params.Tone))
+    ui.toneSlider = widget.NewSlider(0.0, 6.0)
+    ui.toneSlider.Step = 0.01
+    ui.toneSlider.SetValue(ui.params.Tone)
+    ui.toneSlider.OnChanged = func(v float64) {
+        ui.params.Tone = v
+        ui.toneValLbl.SetText(fmt.Sprintf("%.2f", v))
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    }
+
+    ui.modRatioValLbl = widget.NewLabel(fmt.Sprintf("%.1f", ui.params.ModRatio))
+    ui.modRatioSlider = widget.NewSlider(0.00, 5.0)
+    ui.modRatioSlider.Step = 0.1
+    ui.modRatioSlider.SetValue(ui.params.ModRatio)
+    ui.modRatioSlider.OnChanged = func(v float64) {
+        ui.params.ModRatio = v
+        ui.modRatioValLbl.SetText(fmt.Sprintf("%.1f", v))
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    }
+
+    ui.modIndexValLbl = widget.NewLabel(fmt.Sprintf("%.2f", ui.params.ModIndex))
+    ui.modIndexSlider = widget.NewSlider(0.0, 20.0)
+    ui.modIndexSlider.Step = 0.01
+    ui.modIndexSlider.SetValue(ui.params.ModIndex)
+    ui.modIndexSlider.OnChanged = func(v float64) {
+        ui.params.ModIndex = v
+        ui.modIndexValLbl.SetText(fmt.Sprintf("%.2f", v))
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    }
+
+    wfnames := make([]string, 0)
+    wfnames = append(wfnames, xoscillator.WaveformNames()...)
+    wfnames = append(wfnames, xoscillator.WaveSamplerNames()...)
+
+    ui.fm1Select = widget.NewSelect(wfnames, func(s string) {
+        ui.params.Fm1Wave = s
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    })
+    ui.fm1Select.SetSelected(wfnames[0])
+
+    ui.fm2Select = widget.NewSelect(wfnames, func(s string) {
+        ui.params.Fm2Wave = s
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    })
+    ui.fm2Select.SetSelected(wfnames[0])
+
+    ui.fmWaveComposer = container.NewVBox(
+        widget.NewLabelWithStyle("FM Waveform", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+        container.NewGridWithColumns(2,
+            xfyne.NewVariableGrid([]float32{0.3, 0.7},
+                widget.NewLabel("FM Carrier"), ui.fm1Select,
+            ),
+            xfyne.NewVariableGrid([]float32{0.3, 0.7},
+                widget.NewLabel("FM Modulator"), ui.fm2Select,
+            ),
+            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+                widget.NewLabel("FM Mod Ratio"), makeHSliderPlusMinus(ui.modRatioSlider), ui.modRatioValLbl,
+            ),
+            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+                widget.NewLabel("FM Mod Index"), makeHSliderPlusMinus(ui.modIndexSlider), ui.modIndexValLbl,
+            ),
+            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+                widget.NewLabel("FM Tone"), makeHSliderPlusMinus(ui.toneSlider), ui.toneValLbl,
+            ),
+        ),
+    )
+
+}
+
+func (ui *synthUI) buildBaseWaveUI() {
+    // waveforms
+    wfnames := make([]string, 0)
+    wfnames = append(wfnames, xoscillator.WaveformNames()...)
+    wfnames = append(wfnames, xoscillator.WaveSamplerNames()...)
+    wfnames = append(wfnames, "fm", "fm2")
+
+    ui.waveSelect = widget.NewSelect(wfnames, func(s string) {
+        ui.params.BaseWave = s
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    })
+    ui.waveSelect.SetSelected(wfnames[0])
+
+    // Sample rate
+    ui.srSelect = widget.NewSelect([]string{"8 kHz", "16 kHz", "32 kHz", "48 kHz"}, func(s string) {
+        khz, err := strconv.Atoi(strings.TrimSuffix(s, " kHz"))
+        if err == nil {
+            ui.params.SampleRate = khz * 1000
+            if !ui.applyingState {
+                ui.regenerateNote()
+            }
+        }
+    })
+    ui.srSelect.SetSelected("48 kHz")
+
+    // sample length/duration
+    ui.lengthValLbl = widget.NewLabel(fmt.Sprintf("%.0f ms", ui.params.LengthMs))
+    ui.lengthSlider = widget.NewSlider(100, 30000)
+    ui.lengthSlider.Step = 100
+    ui.lengthSlider.SetValue(ui.params.LengthMs)
+    ui.lengthSlider.OnChanged = func(v float64) {
+        ui.params.LengthMs = v
+        ui.lengthValLbl.SetText(fmt.Sprintf("%.0f ms", v))
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    }
+
+    // tune/note
+    ui.tuneValLbl = widget.NewLabel(fmt.Sprintf("%.2f Hz", ui.params.Tune))
+    ui.tuneSlider = widget.NewSlider(5.0, 5000.0)
+    ui.tuneSlider.SetValue(ui.params.Tune)
+    ui.tuneSlider.OnChanged = func(v float64) {
+        ui.params.Tune = v
+        ui.tuneValLbl.SetText(fmt.Sprintf("%.2f Hz", v))
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    }
+
+    // pulse width
+    ui.pulseWidthValLbl = widget.NewLabel(fmt.Sprintf("%.2f", ui.params.PulseWidth))
+    ui.pulseWidthSlider = widget.NewSlider(0.05, 1.0)
+    ui.pulseWidthSlider.Step = 0.01
+    ui.pulseWidthSlider.SetValue(ui.params.PulseWidth)
+    ui.pulseWidthSlider.OnChanged = func(v float64) {
+        ui.params.PulseWidth = v
+        ui.pulseWidthValLbl.SetText(fmt.Sprintf("%.2f", v))
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    }
+
+    ui.snappyValLbl = widget.NewLabel(fmt.Sprintf("%.2f", ui.params.Snappy))
+    ui.snappySlider = widget.NewSlider(0.0, 10.0)
+    ui.snappySlider.Step = 0.01
+    ui.snappySlider.SetValue(ui.params.Snappy)
+    ui.snappySlider.OnChanged = func(v float64) {
+        ui.params.Snappy = v
+        ui.snappyValLbl.SetText(fmt.Sprintf("%.2f", v))
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    }
+
+    // normalization
+    formatNormLabel := func(v float64) string {
+        if v <= 0 {
+            return "Off"
+        }
+        return fmt.Sprintf("%.0f%%", v)
+    }
+
+    ui.normValLbl = widget.NewLabel(formatNormLabel(float64(ui.params.NormalizePct)))
+    ui.normSlider = widget.NewSlider(0, 100)
+    ui.normSlider.Step = 1.0
+    ui.normSlider.SetValue(float64(ui.params.NormalizePct))
+    ui.normSlider.OnChanged = func(v float64) {
+        ui.params.NormalizePct = int64(v)
+        ui.normValLbl.SetText(formatNormLabel(v))
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    }
+
+    // noise seed
+    ui.noiseSeedValLbl = widget.NewLabel(fmt.Sprintf("0x%08X", ui.params.Seed))
+    ui.noiseSeedSlider = widget.NewSlider(0, math.MaxInt32)
+    ui.noiseSeedSlider.Step = 1.0
+    ui.noiseSeedSlider.SetValue(float64(ui.params.Seed))
+    ui.noiseSeedSlider.OnChanged = func(v float64) {
+        ui.params.Seed = int32(v)
+        ui.noiseSeedValLbl.SetText(fmt.Sprintf("0x%08X", int32(v)))
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    }
+
+    ui.baseWaveComposer = container.NewVBox(
+        widget.NewLabelWithStyle("Base Waveform", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+        container.NewGridWithColumns(2,
+            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+                widget.NewLabel("Sample Rate"), ui.srSelect, widget.NewLabel(""),
+            ),
+            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+                widget.NewLabel("Waveform"), ui.waveSelect, widget.NewLabel(""),
+            ),
+            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+                widget.NewLabel("Sample Length"), makeHSliderPlusMinus(ui.lengthSlider), ui.lengthValLbl,
+            ),
+            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+                widget.NewLabel("Tune"), makeHSliderPlusMinus(ui.tuneSlider), ui.tuneValLbl,
+            ),
+            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+                widget.NewLabel("Pulse Width"), makeHSliderPlusMinus(ui.pulseWidthSlider), ui.pulseWidthValLbl,
+            ),
+            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+                widget.NewLabel("Normalize"), makeHSliderPlusMinus(ui.normSlider), ui.normValLbl,
+            ),
+            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+                widget.NewLabel("Seed"), makeHSliderPlusMinus(ui.noiseSeedSlider), ui.noiseSeedValLbl,
+            ),
+            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+                widget.NewLabel("Snappyness"), makeHSliderPlusMinus(ui.snappySlider), ui.snappyValLbl,
+            ),
+
+        ),
+    )
+}
+
+func (ui *synthUI) doFileDialog(title, path, deffile, extdescr, ext, action string, sel func(p string), nsel func()) {
+    _dialog := xfyne.NewSelectDialog(title, path, false, sel, nsel)
+    _dialog.SetPreferredDirs(
+        xdg.DocumentsPath("Samples"),
+        xdg.DocumentsPath("Music"),
+        xdg.DocumentsDir(),
+        xdg.ProjectsPath("Samples"),
+        xdg.ProjectsPath("Music"),
+        xdg.ProjectsDir(),
+        xdg.DownloadDir(),
+        xdg.DesktopDir())
+
+    _dialog.SetAction(action)
+    _dialog.SetFileName(deffile)
+    filter := storage.NewExtensionFileFilter([]string{ext})
+    _dialog.AddFileTypeFilter(extdescr, filter)
+    _dialog.Show()
+}
+
+func (ui *synthUI) savePresets() {
+    ui.doFileDialog("Select File to Save Preset ...",
+        ui.userCurrentPath,
+        fmt.Sprintf("%s_%dHz_%dpw_0x%08X_%s.preset", ui.params.BaseWave, int(ui.params.Tune), int(ui.params.PulseWidth*100), ui.params.Seed, ui.params.DtoStage),
+        "Preset Files (*.preset)",
+        ".preset",
+        "Save",
+        func(outPath string) {
+            ui.userCurrentPath = filepath.Dir(outPath)
+
+            if strings.ToLower(filepath.Ext(outPath)) != ".preset" {
+                outPath += ".preset"
+            }
+
+            bytes, err := json.Marshal(ui.params)
+            if err != nil {
+                ui.statusLabel.SetText("Marshal error: " + err.Error())
+                return
+            }
+
+            err = os.WriteFile(outPath, bytes, 0640)
+            if err != nil {
+                ui.statusLabel.SetText("Save error: " + err.Error())
+                return
+            }
+
+            ui.statusLabel.SetText("Saved " + outPath)
+
+        },
+        func() {
+            ui.statusLabel.SetText("Save dialog error: Dialog cancelled")
+        },
+    )
+}
+
+func (ui *synthUI) loadPresets() {
+    ui.doFileDialog("Select File to Load Preset ...",
+        ui.userCurrentPath,
+        "",
+        "Preset Files (*.preset)",
+        ".preset",
+        "Load",
+        func(inPath string) {
+            ui.userCurrentPath = filepath.Dir(inPath)
+            bytes, err := os.ReadFile(inPath)
+            if err != nil {
+                ui.statusLabel.SetText("Load error: " + err.Error())
+                return
+            }
+
+            err = json.Unmarshal(bytes, &ui.params)
+            if err != nil {
+                ui.statusLabel.SetText("UnMarshal error: " + err.Error())
+                return
+            }
+
+            ui.syncParamsToUI(ui.params)
+            if !ui.applyingState {
+                ui.regenerateNote()
+            }
+            ui.statusLabel.SetText("Load " + inPath)
+        },
+        func() {
+            ui.statusLabel.SetText("Load dialog error: Dialog cancelled")
+        },
+    )
+
 }
 
 func main() {

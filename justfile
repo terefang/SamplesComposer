@@ -100,20 +100,24 @@ make-rel-msg _MSG: set-drel git-push
 make-upload:
     #!/bin/bash
     VERSION=$(shtool version -l txt ./version.txt)
-    gh release upload v$VERSION {{XDIST}}/{{CLI}}* {{XDIST}}/{{EXE}}-$VERSION-windows-amd64.exe
+    gh release upload v$VERSION {{XDIST}}/{{EXE}}-*
 
 #make-prel-full _MSG: (make-prel-msg _MSG) build-all make-upload
 #make-rel-full _MSG: (make-rel-msg _MSG) build-all make-upload
-make-prel-full _MSG: (make-prel-msg _MSG) build build-win make-upload
-make-rel-full _MSG: (make-rel-msg _MSG) build build-win make-upload
+make-prel-full _MSG: (make-prel-msg _MSG) build-all make-upload
+make-rel-full _MSG: (make-rel-msg _MSG) build-all make-upload
 
-build: (build-osarch-out "linux" "amd64" CLI)
+build-linux: (build-osarch "linux" "amd64")
+build-appimage: build-linux
     #!/bin/sh
     rm -rf {{XDIST}}/AppDir; mkdir -p {{XDIST}}/AppDir
+    VERSION=$(shtool version -l txt ./version.txt)
+    cp {{XDIR}}/res/sc.png {{XDIST}}/AppDir/{{CLI}}-linux-amd64.png
+    cp {{XDIR}}/res/AppRun {{XDIST}}/AppDir/AppRun
+    chmod uga+rx {{XDIST}}/AppDir/AppRun
     {{LXDPLY}} -v0 \
         --appdir={{XDIST}}/AppDir \
-        -e{{XDIST}}/{{CLI}} \
-        --icon-file={{XDIR}}/sc.png \
+        -e{{XDIST}}/{{CLI}}-linux-amd64 \
         --create-desktop-file \
         --library=/lib/x86_64-linux-gnu/libm.so.6 \
         --library=/lib/x86_64-linux-gnu/libwayland-client.so.0 \
@@ -128,16 +132,12 @@ build: (build-osarch-out "linux" "amd64" CLI)
         --library=/lib/x86_64-linux-gnu/libXdmcp.so.6 \
         --library=/lib/x86_64-linux-gnu/libbsd.so.0 \
         --library=/lib/x86_64-linux-gnu/libmd.so.0
-    {{APPIMG}} {{XDIST}}/AppDir {{XDIST}}/{{CLI}}.AppImage
+    {{APPIMG}} {{XDIST}}/AppDir {{XDIST}}/{{EXE}}-$VERSION-x86_64-linux.AppImage
 
 build-all:
     #!/bin/sh
     rm -rf {{XDIST}}; mkdir -p {{XDIST}}
-    for XTYPE in {{GOARCHS}}; do
-        _gos=${XTYPE%%,*}
-        _garch=${XTYPE##*,}
-        cd {{XDIR}} && just -f justfile build-osarch "${_gos}" "${_garch}"
-    done
+    cd {{XDIR}} && just -f justfile build-appimage build-win
 
 build-osarch _GOS _GARCH:
     #!/bin/sh
@@ -179,13 +179,14 @@ build-win: update-version-info
     fyne-cross windows \
       -app-id terefang.sc \
       -app-version $VERSION \
-      -arch amd64 \
+      -arch amd64,386 \
       -dir {{XDIR}} \
-      -icon Icon.png \
+      -icon res/sc.png \
       -name "{{EXE}}" \
       -output "{{EXE}}-$VERSION" \
       cmd/sc
     cp {{XDIR}}/fyne-cross/bin/windows-amd64/{{EXE}}-$VERSION.exe {{XDIST}}/{{EXE}}-$VERSION-windows-amd64.exe
+    cp {{XDIR}}/fyne-cross/bin/windows-386/{{EXE}}-$VERSION.exe {{XDIST}}/{{EXE}}-$VERSION-windows-x86.exe
 
 build-mac: update-version-info
     #!/bin/sh -x
@@ -198,7 +199,7 @@ build-mac: update-version-info
       -app-version $VERSION \
       -arch arm64 \
       -dir {{XDIR}} \
-      -icon Icon.png \
+      -icon res/sc.png \
       -name "{{EXE}}" \
       -output "{{EXE}}-$VERSION" \
       cmd/sc
