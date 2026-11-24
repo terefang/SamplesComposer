@@ -2,6 +2,7 @@
 
 XDIR := justfile_directory()
 XDIST := XDIR + "/dist"
+XTMP := XDIR + "/tmp"
 EXE := "samples-composer"
 CLI := "sc"
 OSARCH := os()+"-"+arch()
@@ -226,18 +227,100 @@ build-lnx: update-version-info
       cmd/sc
     cp {{XDIR}}/fyne-cross/bin/linux-amd64/{{CLI}} {{XDIST}}/{{EXE}}-$VERSION-linux-amd64-$OSTAG
 
-build-docker: \
-    (build-docker-variant "debian10" "compat-glibc-2.28-x11-only") \
-    (build-docker-variant "debian11" "compat-glibc-2.31-x11-only")
+render-docker-template _TEMPLATE _VARIANT _IMAGE:
+    #!/bin/sh -x
+    cd {{XDIR}}
+    XVERSION=$(shtool version -l txt ./version.txt)
+    XARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+    DOCKERIMAGE="{{_IMAGE}}" template -o docker/Dockerfile.{{_VARIANT}}.TMP docker/Dockerfile.{{_TEMPLATE}}.tmpl
+
+build-docker-debian9: \
+    (render-docker-template "debian_x11" "debian9" "debian/eol:stretch-slim") \
+    (build-docker-variant "debian9" "compat-glibc-2.24-x11-only")
+
+build-docker-debian10: \
+    (render-docker-template "debian_x11" "debian10" "debian:buster-slim") \
+    (build-docker-variant "debian10" "compat-glibc-2.28-x11-only")
+
+build-docker-debian12: \
+    (render-docker-template "debian" "debian12" "debian:bookworm-slim") \
+    (build-docker-variant "debian12" "compat-glibc-2.36")
+
+build-docker-debian13: \
+    (render-docker-template "debian" "debian13" "debian:trixie-slim") \
+    (build-docker-variant "debian13" "compat-glibc-2.41")
+
+build-docker-ubuntu18: \
+    (render-docker-template "ubuntu_x11" "ubuntu18" "ubuntu:bionic") \
+    (build-docker-variant "ubuntu18" "")
+
+build-docker-ubuntu20: \
+    (render-docker-template "ubuntu_x11" "ubuntu20" "ubuntu:focal") \
+    (build-docker-variant "ubuntu20" "")
+
+build-docker-ubuntu22: \
+    (render-docker-template "ubuntu" "ubuntu22" "ubuntu:jammy") \
+    (build-docker-variant "ubuntu22" "")
+
+build-docker-ubuntu24: \
+    (render-docker-template "ubuntu" "ubuntu24" "ubuntu:noble") \
+    (build-docker-variant "ubuntu24" "")
+
+build-docker-ubuntu26: \
+    (render-docker-template "ubuntu" "ubuntu26" "ubuntu:stonking") \
+    (build-docker-variant "ubuntu26" "")
+
+build-docker-fedora45: \
+    (render-docker-template "rhel" "fedora45" "fedora:45") \
+    (build-docker-variant "fedora45" "")
+
+build-docker-fedora44: \
+    (render-docker-template "rhel" "fedora44" "fedora:44") \
+    (build-docker-variant "fedora44" "")
+
+build-docker-fedora43: \
+    (render-docker-template "rhel" "fedora43" "fedora:43") \
+    (build-docker-variant "fedora43" "")
+
+build-docker-fedora42: \
+    (render-docker-template "rhel" "fedora42" "fedora:42") \
+    (build-docker-variant "fedora42" "")
+
+build-docker-fedora: \
+    build-docker-fedora42 \
+    build-docker-fedora43 \
+    build-docker-fedora44 \
+    build-docker-fedora45
+
+build-docker-debian: \
+    build-docker-debian9 \
+    build-docker-debian10 \
+    build-docker-debian12 \
+    build-docker-debian13
+
+build-docker-ubuntu: \
+    build-docker-ubuntu18 \
+    build-docker-ubuntu20 \
+    build-docker-ubuntu22 \
+    build-docker-ubuntu24 \
+    build-docker-ubuntu26
+
+build-docker-arch: \
+    (render-docker-template "arch" "archlinux" "archlinux/archlinux") \
+    (build-docker-variant "archlinux" "")
+
+build-docker: build-docker-debian build-docker-ubuntu
+
 build-docker-variant _VARIANT _ALIAS:
     #!/bin/sh
     cd {{XDIR}}
     XVERSION=$(shtool version -l txt ./version.txt)
     XARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
-    docker build --progress=plain -f docker/Dockerfile.{{_VARIANT}} -t fyne-oldlinux . && \
-    docker create --name fyne-extract fyne-oldlinux && \
-    docker cp fyne-extract:/fyne-app {{XDIST}}/{{EXE}}-$XVERSION-linux-$XARCH-{{_VARIANT}} && \
-    docker rm fyne-extract && \
-    docker image rm fyne-oldlinux && \
-    cp {{XDIST}}/{{EXE}}-$XVERSION-linux-$XARCH-{{_VARIANT}} {{XDIST}}/{{EXE}}-$XVERSION-linux-$XARCH-{{_ALIAS}}
+    docker builder prune -f
+    docker build --progress=plain -f docker/Dockerfile.{{_VARIANT}}.TMP -t fyne-oldlinux-{{_VARIANT}} . && \
+    docker create --name fyne-extract-{{_VARIANT}} fyne-oldlinux-{{_VARIANT}} && \
+    docker cp fyne-extract-{{_VARIANT}}:/fyne-app {{XDIST}}/{{EXE}}-$XVERSION-linux-$XARCH-{{_VARIANT}} && \
+    docker rm fyne-extract-{{_VARIANT}} && \
+    docker image rm fyne-oldlinux-{{_VARIANT}}
+    ( [ -n "{{_ALIAS}}" -a -f "{{XDIST}}/{{EXE}}-$XVERSION-linux-$XARCH-{{_VARIANT}}" ] && cp {{XDIST}}/{{EXE}}-$XVERSION-linux-$XARCH-{{_VARIANT}} {{XDIST}}/{{EXE}}-$XVERSION-linux-$XARCH-{{_ALIAS}} ) || true
 

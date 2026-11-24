@@ -1,0 +1,51 @@
+# syntax=docker/dockerfile:1
+FROM {{DOCKERIMAGE}}
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV GO_VERSION=1.26.7
+ENV PATH="/usr/local/go/bin:${PATH}"
+
+#RUN sed -i 's|/deb.debian.org/|/ftp.at.debian.org/|g' /etc/apt/sources.list
+RUN echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        gcc \
+        g++ \
+        libc6-dev \
+        pkg-config \
+        patchelf \
+        libwayland-dev \
+        libgl1-mesa-dev \
+        libegl1-mesa-dev \
+        libxkbcommon-dev \
+        libx11-dev \
+        libxcursor-dev \
+        libxrandr-dev \
+        libxinerama-dev \
+        libxi-dev \
+        libxxf86vm-dev
+
+RUN rm -rf /var/lib/apt/lists/*
+
+
+# Install a modern Go toolchain
+RUN ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') && \
+    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" | tar -C /usr/local -xzf -
+
+
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+
+
+COPY . .
+RUN rm -rf vendor && go mod tidy && go mod vendor
+
+#build
+ENV CGO_ENABLED=1 GOOS=linux
+RUN ls -la && pwd && go build -v -trimpath -o /out/fyne-app ./cmd/sc
+
+FROM scratch
+COPY --from=0 /out/fyne-app /fyne-app
+ENTRYPOINT ["/fyne-app"]
