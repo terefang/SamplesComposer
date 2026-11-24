@@ -226,13 +226,15 @@ build-lnx: update-version-info
       cmd/sc
     cp {{XDIR}}/fyne-cross/bin/linux-amd64/{{CLI}} {{XDIST}}/{{EXE}}-$VERSION-linux-amd64-$OSTAG
 
-build-docker: (build-docker-variant "debian10" "compat-glibc-2.28-x11-only")
+build-docker: \
+    (build-docker-variant "debian10" "compat-glibc-2.28-x11-only") \
+    (build-docker-variant "debian11" "compat-glibc-2.31-x11-only")
 build-docker-variant _VARIANT _ALIAS:
     #!/bin/sh
     cd {{XDIR}}
     XVERSION=$(shtool version -l txt ./version.txt)
     XARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
-    docker build --progress=plain -f Dockerfile.{{_VARIANT}} -t fyne-oldlinux . && \
+    docker build --progress=plain -f docker/Dockerfile.{{_VARIANT}} -t fyne-oldlinux . && \
     docker create --name fyne-extract fyne-oldlinux && \
     docker cp fyne-extract:/fyne-app {{XDIST}}/{{EXE}}-$XVERSION-linux-$XARCH-{{_VARIANT}} && \
     docker rm fyne-extract && \
