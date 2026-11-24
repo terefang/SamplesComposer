@@ -100,44 +100,45 @@ make-rel-msg _MSG: set-drel git-push
 make-upload:
     #!/bin/bash
     VERSION=$(shtool version -l txt ./version.txt)
-    gh release upload v$VERSION {{XDIST}}/{{EXE}}-*
+    gh release upload v$VERSION {{XDIST}}/{{EXE}}-$VERSION-*
 
 #make-prel-full _MSG: (make-prel-msg _MSG) build-all make-upload
 #make-rel-full _MSG: (make-rel-msg _MSG) build-all make-upload
 make-prel-full _MSG: (make-prel-msg _MSG) build-all make-upload
 make-rel-full _MSG: (make-rel-msg _MSG) build-all make-upload
 
-build-linux: (build-osarch "linux" "amd64")
-build-appimage: build-linux
-    #!/bin/sh
-    rm -rf {{XDIST}}/AppDir; mkdir -p {{XDIST}}/AppDir
-    VERSION=$(shtool version -l txt ./version.txt)
-    cp {{XDIR}}/res/sc.png {{XDIST}}/AppDir/{{CLI}}-linux-amd64.png
-    cp {{XDIR}}/res/AppRun {{XDIST}}/AppDir/AppRun
-    chmod uga+rx {{XDIST}}/AppDir/AppRun
-    {{LXDPLY}} -v0 \
-        --appdir={{XDIST}}/AppDir \
-        -e{{XDIST}}/{{CLI}}-linux-amd64 \
-        --create-desktop-file \
-        --library=/lib/x86_64-linux-gnu/libm.so.6 \
-        --library=/lib/x86_64-linux-gnu/libwayland-client.so.0 \
-        --library=/lib/x86_64-linux-gnu/libGL.so.1 \
-        --library=/lib/x86_64-linux-gnu/libc.so.6 \
-        --library=/lib/x86_64-linux-gnu/libffi.so.8 \
-        --library=/lib/x86_64-linux-gnu/libGLdispatch.so.0 \
-        --library=/lib/x86_64-linux-gnu/libGLX.so.0 \
-        --library=/lib/x86_64-linux-gnu/libX11.so.6 \
-        --library=/lib/x86_64-linux-gnu/libxcb.so.1 \
-        --library=/lib/x86_64-linux-gnu/libXau.so.6 \
-        --library=/lib/x86_64-linux-gnu/libXdmcp.so.6 \
-        --library=/lib/x86_64-linux-gnu/libbsd.so.0 \
-        --library=/lib/x86_64-linux-gnu/libmd.so.0
-    {{APPIMG}} {{XDIST}}/AppDir {{XDIST}}/{{EXE}}-$VERSION-x86_64-linux.AppImage
-
+#build-appimage: build-linux
+#    #!/bin/sh
+#    rm -rf {{XDIST}}/AppDir; mkdir -p {{XDIST}}/AppDir
+#    VERSION=$(shtool version -l txt ./version.txt)
+#    cp {{XDIR}}/res/sc.png {{XDIST}}/AppDir/{{CLI}}-linux-amd64.png
+#    cp {{XDIR}}/res/AppRun {{XDIST}}/AppDir/AppRun
+#    chmod uga+rx {{XDIST}}/AppDir/AppRun
+#    {{LXDPLY}} -v0 \
+#        --appdir={{XDIST}}/AppDir \
+#        -e{{XDIST}}/{{CLI}}-linux-amd64 \
+#        --create-desktop-file \
+#        --library=/lib/x86_64-linux-gnu/libGL.so.1 \
+#        --library=/lib/x86_64-linux-gnu/libffi.so.8 \
+#        --library=/lib/x86_64-linux-gnu/libGLdispatch.so.0 \
+#        --library=/lib/x86_64-linux-gnu/libGLX.so.0 \
+#        --library=/lib/x86_64-linux-gnu/libX11.so.6 \
+#        --library=/lib/x86_64-linux-gnu/libxcb.so.1 \
+#        --library=/lib/x86_64-linux-gnu/libXau.so.6 \
+#        --library=/lib/x86_64-linux-gnu/libXdmcp.so.6 \
+#        --library=/lib/x86_64-linux-gnu/libbsd.so.0 \
+#        --library=/lib/x86_64-linux-gnu/libmd.so.0
+#    {{APPIMG}} {{XDIST}}/AppDir {{XDIST}}/{{EXE}}-$VERSION-x86_64-linux.AppImage
+#
+##        --library=/lib/x86_64-linux-gnu/libc.so.6 \
+##        --library=/lib/x86_64-linux-gnu/libm.so.6 \
+##        --library=/lib/x86_64-linux-gnu/libwayland-client.so.0 \
 build-all:
     #!/bin/sh
     rm -rf {{XDIST}}; mkdir -p {{XDIST}}
-    cd {{XDIR}} && just -f justfile build-appimage build-win
+    cd {{XDIR}} && just -f justfile build-docker build-lnx build-win
+
+build-all-inc:  do-inc-level build-all
 
 build-osarch _GOS _GARCH:
     #!/bin/sh
@@ -204,3 +205,37 @@ build-mac: update-version-info
       -output "{{EXE}}-$VERSION" \
       cmd/sc
     cp {{XDIR}}/fyne-cross/bin/darwin-arm64/{{EXE}}-$VERSION {{XDIST}}/{{EXE}}-$VERSION-darwin-arm64
+
+build-linux: (build-osarch "linux" "amd64")
+build-lnx: update-version-info
+    #!/bin/sh -x
+    . /etc/os-release
+    OSTAG="$ID-$VERSION_ID-$VERSION_CODENAME"
+    export GOROOT={{GOROOT}}
+    export PATH=$GOROOT/bin:$PATH
+    mkdir -p {{XDIST}}
+    VERSION=$(shtool version -l txt ./version.txt)
+    fyne-cross linux \
+      -app-id terefang.sc \
+      -app-version $VERSION \
+      -arch amd64 \
+      -dir {{XDIR}} \
+      -icon res/sc.png \
+      -name "{{EXE}}" \
+      -output "{{EXE}}-$VERSION" \
+      cmd/sc
+    cp {{XDIR}}/fyne-cross/bin/linux-amd64/{{CLI}} {{XDIST}}/{{EXE}}-$VERSION-linux-amd64-$OSTAG
+
+build-docker: (build-docker-variant "debian10" "compat-glibc-2.28-x11-only")
+build-docker-variant _VARIANT _ALIAS:
+    #!/bin/sh
+    cd {{XDIR}}
+    XVERSION=$(shtool version -l txt ./version.txt)
+    XARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+    docker build --progress=plain -f Dockerfile.{{_VARIANT}} -t fyne-oldlinux . && \
+    docker create --name fyne-extract fyne-oldlinux && \
+    docker cp fyne-extract:/fyne-app {{XDIST}}/{{EXE}}-$XVERSION-linux-$XARCH-{{_VARIANT}} && \
+    docker rm fyne-extract && \
+    docker image rm fyne-oldlinux && \
+    cp {{XDIST}}/{{EXE}}-$XVERSION-linux-$XARCH-{{_VARIANT}} {{XDIST}}/{{EXE}}-$XVERSION-linux-$XARCH-{{_ALIAS}}
+

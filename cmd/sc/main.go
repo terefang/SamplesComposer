@@ -236,13 +236,14 @@ func lookupWave(p SynthParams, bw string, ifm bool) xoscillator.Waveform {
     if ok {
         return baseWave
     }
-    spl, ok2 := xoscillator.LookupWaveSampler(bw, 0x1337, 2, .5, false, 2, 2.0, .5, .5, .5)
+    spl, ok2 := xoscillator.LookupWaveSampler(bw, int(p.Seed), 2, .5, false, 2, 2.0, .5, .5, .5)
     if ok2 {
         return spl
     }
 
     if ifm || bw == "fm" {
         fm2 := lookupWave(p, p.Fm2Wave, false)
+        fm2.SetSeed(p.Seed)
         fm2.SetPulseWidth(1.0)
         fm := xoscillator.NewFM2Waveform(p.ModRatio, effectiveModIndex, fm2, p.PulseWidth)
         return fm
@@ -503,7 +504,7 @@ type synthUI struct {
     normValLbl         *widget.Label
     normSlider         *widget.Slider
     userCurrentPath    string
-    baseWaveComposer   *fyne.Container
+    waveFmComposer     *fyne.Container
     noiseSeedValLbl    *widget.Label
     noiseSeedSlider    *widget.Slider
     asdrCheck          *widget.Check
@@ -522,7 +523,6 @@ type synthUI struct {
     tenvBtn3           *widget.Button
     dtoSelect          *widget.Select
     colDTO             *autoFitAccordion
-    fmWaveComposer     *fyne.Container
     fm1Select          *widget.Select
     fm2Select          *widget.Select
     cdmValLbl          *widget.Label
@@ -535,6 +535,7 @@ type synthUI struct {
     driftDepthSlider   *widget.Slider
     dbgValLbl          *widget.Label
     dbgSlider          *widget.Slider
+    colPostProc        *autoFitAccordion
 }
 
 func (ui *synthUI) syncParamsToUI(params SynthParams) {
@@ -1273,18 +1274,6 @@ func (ui *synthUI) initWidgets() {
     ui.presetSaveBtn = widget.NewButton("Save Preset", func() { ui.savePresets() })
     ui.presetLoadBtn = widget.NewButton("Load Preset", func() { ui.loadPresets() })
 
-    ui.dbgValLbl = widget.NewLabel(fmt.Sprintf("%+.1fdB", ui.params.DbGain))
-    ui.dbgSlider = widget.NewSlider(-50.0, 0.0)
-    ui.dbgSlider.Step = 1
-    ui.dbgSlider.SetValue(ui.params.DbGain)
-    ui.dbgSlider.OnChanged = func(v float64) {
-        ui.params.DbGain = v
-        ui.dbgValLbl.SetText(fmt.Sprintf("%+.1fdB", v))
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    }
-
     ui.statusLabel = widget.NewLabel("Ready")
 
     ui.vizBg = canvas.NewRectangle(color.RGBA{R: 18, G: 20, B: 26, A: 255})
@@ -1296,8 +1285,6 @@ func (ui *synthUI) initWidgets() {
     })
     ui.modeSelect.SetSelected("Waveform")
 
-    ui.buildFmWaveUI()
-
     // detune oversampling
     ui.buildDetuneUI()
 
@@ -1306,6 +1293,8 @@ func (ui *synthUI) initWidgets() {
 
     //ASDR
     ui.buildAsdrUI()
+
+    ui.buildPostProcUI()
 
     ui.titleEntry = widget.NewEntry()
     ui.titleEntry.SetText("SamplesComposer Sample")
@@ -1609,7 +1598,7 @@ func makeVSliderPlusMinus2(slider *widget.Slider) *fyne.Container {
 // buildLayout arranges the toolbar, parameter columns, independently collapsible Sequence,
 // Meta-Data, and Visualization accordions directly into the window without scrollbars.
 func (ui *synthUI) buildLayout() {
-    ui.buildBaseWaveUI()
+    ui.buildWaveFmUI()
 
     // Standalone Meta-Data accordion that auto-fits the window when opened or closed
     ui.metaContent = container.NewVBox(
@@ -1643,29 +1632,28 @@ func (ui *synthUI) buildLayout() {
     )
     ui.vizAccordion.Open(0)
 
-    ui.topBar = container.NewGridWithColumns(6,
+    ui.topBar = container.NewGridWithColumns(5,
         ui.playBtn,
-        container.NewBorder(nil, nil, nil, ui.dbgValLbl, makeHSliderPlusMinus(ui.dbgSlider)),
         ui.resetBtn,
         ui.saveBtn,
         ui.presetSaveBtn,
         ui.presetLoadBtn,
     )
 
-    scroller := container.NewVScroll(container.NewVBox(ui.baseWaveComposer,
-        ui.fmWaveComposer,
-        ui.colDTO,
-        ui.colADSR,
-        ui.colTENV,
-        ui.metaAccordion,
-
-    ),
+    scroller := container.NewVScroll(
+        container.NewVBox(ui.waveFmComposer,
+            ui.colDTO,
+            ui.colADSR,
+            ui.colTENV,
+            ui.colPostProc,
+            ui.metaAccordion,
+            ui.vizAccordion,
+        ),
     )
     scroller.SetMinSize(fyne.NewSize(600, 600))
     root := container.NewBorder(ui.topBar,
-        container.NewVBox(ui.vizAccordion, ui.playerBar, ui.statusLabel),
+        container.NewVBox(ui.playerBar, ui.statusLabel),
         nil, nil, scroller)
-
     ui.window.SetContent(root)
     ui.window.SetOnClosed(func() {
         stopAndUninitDevice(ui.detachMalgoDevice())
@@ -1748,6 +1736,54 @@ func (ui *synthUI) buildTenvUI() {
         func() { ui.fitWindowToContent() },
         "T16-Envelope",
         envContent,
+    )
+}
+
+func (ui *synthUI) buildPostProcUI() {
+
+    ui.dbgValLbl = widget.NewLabel(fmt.Sprintf("%+.1fdB", ui.params.DbGain))
+    ui.dbgSlider = widget.NewSlider(-50.0, 0.0)
+    ui.dbgSlider.Step = 1
+    ui.dbgSlider.SetValue(ui.params.DbGain)
+    ui.dbgSlider.OnChanged = func(v float64) {
+        ui.params.DbGain = v
+        ui.dbgValLbl.SetText(fmt.Sprintf("%+.1fdB", v))
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    }
+
+    // normalization
+    formatNormLabel := func(v float64) string {
+        if v <= 0 {
+            return "Off"
+        }
+        return fmt.Sprintf("%.0f%%", v)
+    }
+
+    ui.normValLbl = widget.NewLabel(formatNormLabel(float64(ui.params.NormalizePct)))
+    ui.normSlider = widget.NewSlider(0, 100)
+    ui.normSlider.Step = 1.0
+    ui.normSlider.SetValue(float64(ui.params.NormalizePct))
+    ui.normSlider.OnChanged = func(v float64) {
+        ui.params.NormalizePct = int64(v)
+        ui.normValLbl.SetText(formatNormLabel(v))
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    }
+
+    ui.colPostProc = newAutoFitAccordion(
+        func() { ui.fitWindowToContent() },
+        "PostProcessing",
+        container.NewGridWithColumns(2,
+            xfyne.NewVariableGrid([]float32{0.3, 0.7},
+                widget.NewLabel("Post Gain"), container.NewBorder(nil, nil, nil, ui.dbgValLbl, makeHSliderPlusMinus(ui.dbgSlider)),
+            ),
+            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+                widget.NewLabel("Normalize"), makeHSliderPlusMinus(ui.normSlider), ui.normValLbl,
+            ),
+        ),
     )
 }
 
@@ -1945,6 +1981,18 @@ func (ui *synthUI) buildAsdrUI() {
         }
     })
 
+    ui.snappyValLbl = widget.NewLabel(fmt.Sprintf("%.2f", ui.params.Snappy))
+    ui.snappySlider = widget.NewSlider(0.0, 1.5)
+    ui.snappySlider.Step = 0.01
+    ui.snappySlider.SetValue(ui.params.Snappy)
+    ui.snappySlider.OnChanged = func(v float64) {
+        ui.params.Snappy = v
+        ui.snappyValLbl.SetText(fmt.Sprintf("%.2f", v))
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    }
+
     ui.delayValLbl = widget.NewLabel(fmt.Sprintf("%.3fs", ui.params.Delay))
     ui.delaySlider = widget.NewSlider(0.001, 10.0)
     ui.delaySlider.Step = 0.005
@@ -2017,27 +2065,28 @@ func (ui *synthUI) buildAsdrUI() {
         }
     }
 
-    adsrContent := container.NewVBox(
+    adsrContent := container.NewGridWithColumns(2,
         ui.asdrCheck,
-        container.NewGridWithColumns(2,
-            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
-                widget.NewLabel("Delay"), makeHSliderPlusMinus(ui.delaySlider), ui.delayValLbl,
-            ),
-            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
-                widget.NewLabel("Attack"), makeHSliderPlusMinus(ui.attackSlider), ui.attackValLbl,
-            ),
-            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
-                widget.NewLabel("Hold"), makeHSliderPlusMinus(ui.holdSlider), ui.holdValLbl,
-            ),
-            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
-                widget.NewLabel("Decay"), makeHSliderPlusMinus(ui.decaySlider), ui.decayValLbl,
-            ),
-            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
-                widget.NewLabel("Sustain"), makeHSliderPlusMinus(ui.sustainSlider), ui.sustainValLbl,
-            ),
-            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
-                widget.NewLabel("Release"), makeHSliderPlusMinus(ui.releaseSlider), ui.releaseValLbl,
-            ),
+        xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+            widget.NewLabel("Snappyness"), makeHSliderPlusMinus(ui.snappySlider), ui.snappyValLbl,
+        ),
+        xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+            widget.NewLabel("Delay"), makeHSliderPlusMinus(ui.delaySlider), ui.delayValLbl,
+        ),
+        xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+            widget.NewLabel("Attack"), makeHSliderPlusMinus(ui.attackSlider), ui.attackValLbl,
+        ),
+        xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+            widget.NewLabel("Hold"), makeHSliderPlusMinus(ui.holdSlider), ui.holdValLbl,
+        ),
+        xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+            widget.NewLabel("Decay"), makeHSliderPlusMinus(ui.decaySlider), ui.decayValLbl,
+        ),
+        xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+            widget.NewLabel("Sustain"), makeHSliderPlusMinus(ui.sustainSlider), ui.sustainValLbl,
+        ),
+        xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+            widget.NewLabel("Release"), makeHSliderPlusMinus(ui.releaseSlider), ui.releaseValLbl,
         ),
     )
 
@@ -2049,87 +2098,7 @@ func (ui *synthUI) buildAsdrUI() {
 
 }
 
-func (ui *synthUI) buildFmWaveUI() {
-    ui.toneValLbl = widget.NewLabel(fmt.Sprintf("%.2f", ui.params.Tone))
-    ui.toneSlider = widget.NewSlider(0.0, 6.0)
-    ui.toneSlider.Step = 0.01
-    ui.toneSlider.SetValue(ui.params.Tone)
-    ui.toneSlider.OnChanged = func(v float64) {
-        ui.params.Tone = v
-        ui.toneValLbl.SetText(fmt.Sprintf("%.2f", v))
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    }
-
-    ui.modRatioValLbl = widget.NewLabel(fmt.Sprintf("%.1f", ui.params.ModRatio))
-    ui.modRatioSlider = widget.NewSlider(0.00, 5.0)
-    ui.modRatioSlider.Step = 0.1
-    ui.modRatioSlider.SetValue(ui.params.ModRatio)
-    ui.modRatioSlider.OnChanged = func(v float64) {
-        ui.params.ModRatio = v
-        ui.modRatioValLbl.SetText(fmt.Sprintf("%.1f", v))
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    }
-
-    ui.modIndexValLbl = widget.NewLabel(fmt.Sprintf("%.2f", ui.params.ModIndex))
-    ui.modIndexSlider = widget.NewSlider(0.0, 20.0)
-    ui.modIndexSlider.Step = 0.01
-    ui.modIndexSlider.SetValue(ui.params.ModIndex)
-    ui.modIndexSlider.OnChanged = func(v float64) {
-        ui.params.ModIndex = v
-        ui.modIndexValLbl.SetText(fmt.Sprintf("%.2f", v))
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    }
-
-    wfnames := make([]string, 0)
-    wfnames = append(wfnames, xoscillator.WaveformNames()...)
-    wfnames = append(wfnames, xoscillator.WaveSamplerNames()...)
-
-    ui.fm1Select = widget.NewSelect(wfnames, func(s string) {
-        ui.params.Fm1Wave = s
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    })
-    ui.fm1Select.SetSelected(wfnames[0])
-
-    ui.fm2Select = widget.NewSelect(wfnames, func(s string) {
-        ui.params.Fm2Wave = s
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    })
-    ui.fm2Select.SetSelected(wfnames[0])
-
-    ui.fmWaveComposer = container.NewVBox(
-        widget.NewLabelWithStyle("FM Waveform", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-        container.NewGridWithColumns(2,
-            xfyne.NewVariableGrid([]float32{0.3, 0.7},
-                widget.NewLabel("FM Carrier"), ui.fm1Select,
-            ),
-            xfyne.NewVariableGrid([]float32{0.3, 0.7},
-                widget.NewLabel("FM Modulator"), ui.fm2Select,
-            ),
-            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
-                widget.NewLabel("FM Mod Ratio"), makeHSliderPlusMinus(ui.modRatioSlider), ui.modRatioValLbl,
-            ),
-            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
-                widget.NewLabel("FM Mod Index"), makeHSliderPlusMinus(ui.modIndexSlider), ui.modIndexValLbl,
-            ),
-            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
-                widget.NewLabel("FM Tone"), makeHSliderPlusMinus(ui.toneSlider), ui.toneValLbl,
-            ),
-        ),
-    )
-
-}
-
-func (ui *synthUI) buildBaseWaveUI() {
+func (ui *synthUI) buildWaveFmUI() {
     // waveforms
     wfnames := make([]string, 0)
     wfnames = append(wfnames, xoscillator.WaveformNames()...)
@@ -2194,38 +2163,6 @@ func (ui *synthUI) buildBaseWaveUI() {
         }
     }
 
-    ui.snappyValLbl = widget.NewLabel(fmt.Sprintf("%.2f", ui.params.Snappy))
-    ui.snappySlider = widget.NewSlider(0.0, 10.0)
-    ui.snappySlider.Step = 0.01
-    ui.snappySlider.SetValue(ui.params.Snappy)
-    ui.snappySlider.OnChanged = func(v float64) {
-        ui.params.Snappy = v
-        ui.snappyValLbl.SetText(fmt.Sprintf("%.2f", v))
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    }
-
-    // normalization
-    formatNormLabel := func(v float64) string {
-        if v <= 0 {
-            return "Off"
-        }
-        return fmt.Sprintf("%.0f%%", v)
-    }
-
-    ui.normValLbl = widget.NewLabel(formatNormLabel(float64(ui.params.NormalizePct)))
-    ui.normSlider = widget.NewSlider(0, 100)
-    ui.normSlider.Step = 1.0
-    ui.normSlider.SetValue(float64(ui.params.NormalizePct))
-    ui.normSlider.OnChanged = func(v float64) {
-        ui.params.NormalizePct = int64(v)
-        ui.normValLbl.SetText(formatNormLabel(v))
-        if !ui.applyingState {
-            ui.regenerateNote()
-        }
-    }
-
     // noise seed
     ui.noiseSeedValLbl = widget.NewLabel(fmt.Sprintf("0x%08X", ui.params.Seed))
     ui.noiseSeedSlider = widget.NewSlider(0, math.MaxInt32)
@@ -2239,8 +2176,64 @@ func (ui *synthUI) buildBaseWaveUI() {
         }
     }
 
-    ui.baseWaveComposer = container.NewVBox(
-        widget.NewLabelWithStyle("Base Waveform", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+    ui.toneValLbl = widget.NewLabel(fmt.Sprintf("%.2f", ui.params.Tone))
+    ui.toneSlider = widget.NewSlider(0.0, 6.0)
+    ui.toneSlider.Step = 0.01
+    ui.toneSlider.SetValue(ui.params.Tone)
+    ui.toneSlider.OnChanged = func(v float64) {
+        ui.params.Tone = v
+        ui.toneValLbl.SetText(fmt.Sprintf("%.2f", v))
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    }
+
+    ui.modRatioValLbl = widget.NewLabel(fmt.Sprintf("%.1f", ui.params.ModRatio))
+    ui.modRatioSlider = widget.NewSlider(0.00, 5.0)
+    ui.modRatioSlider.Step = 0.1
+    ui.modRatioSlider.SetValue(ui.params.ModRatio)
+    ui.modRatioSlider.OnChanged = func(v float64) {
+        ui.params.ModRatio = v
+        ui.modRatioValLbl.SetText(fmt.Sprintf("%.1f", v))
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    }
+
+    ui.modIndexValLbl = widget.NewLabel(fmt.Sprintf("%.2f", ui.params.ModIndex))
+    ui.modIndexSlider = widget.NewSlider(0.0, 20.0)
+    ui.modIndexSlider.Step = 0.01
+    ui.modIndexSlider.SetValue(ui.params.ModIndex)
+    ui.modIndexSlider.OnChanged = func(v float64) {
+        ui.params.ModIndex = v
+        ui.modIndexValLbl.SetText(fmt.Sprintf("%.2f", v))
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    }
+
+    wfnames2 := make([]string, 0)
+    wfnames2 = append(wfnames2, xoscillator.WaveformNames()...)
+    wfnames2 = append(wfnames2, xoscillator.WaveSamplerNames()...)
+
+    ui.fm1Select = widget.NewSelect(wfnames2, func(s string) {
+        ui.params.Fm1Wave = s
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    })
+    ui.fm1Select.SetSelected(wfnames2[0])
+
+    ui.fm2Select = widget.NewSelect(wfnames, func(s string) {
+        ui.params.Fm2Wave = s
+        if !ui.applyingState {
+            ui.regenerateNote()
+        }
+    })
+    ui.fm2Select.SetSelected(wfnames2[0])
+
+    ui.waveFmComposer = container.NewVBox(
+        widget.NewLabelWithStyle("Wave/FM", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
         container.NewGridWithColumns(2,
             xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
                 widget.NewLabel("Sample Rate"), ui.srSelect, widget.NewLabel(""),
@@ -2258,15 +2251,23 @@ func (ui *synthUI) buildBaseWaveUI() {
                 widget.NewLabel("Pulse Width"), makeHSliderPlusMinus(ui.pulseWidthSlider), ui.pulseWidthValLbl,
             ),
             xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
-                widget.NewLabel("Normalize"), makeHSliderPlusMinus(ui.normSlider), ui.normValLbl,
-            ),
-            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
                 widget.NewLabel("Seed"), makeHSliderPlusMinus(ui.noiseSeedSlider), ui.noiseSeedValLbl,
             ),
-            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
-                widget.NewLabel("Snappyness"), makeHSliderPlusMinus(ui.snappySlider), ui.snappyValLbl,
+            xfyne.NewVariableGrid([]float32{0.3, 0.7},
+                widget.NewLabel("FM Carrier"), ui.fm1Select,
             ),
-
+            xfyne.NewVariableGrid([]float32{0.3, 0.7},
+                widget.NewLabel("FM Modulator"), ui.fm2Select,
+            ),
+            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+                widget.NewLabel("FM Mod Ratio"), makeHSliderPlusMinus(ui.modRatioSlider), ui.modRatioValLbl,
+            ),
+            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+                widget.NewLabel("FM Mod Index"), makeHSliderPlusMinus(ui.modIndexSlider), ui.modIndexValLbl,
+            ),
+            xfyne.NewVariableGrid([]float32{0.3, 0.5, 0.2},
+                widget.NewLabel("FM Tone"), makeHSliderPlusMinus(ui.toneSlider), ui.toneValLbl,
+            ),
         ),
     )
 }
