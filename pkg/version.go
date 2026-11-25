@@ -1,4 +1,4 @@
 package pkg
 const (
-    PkgVersion = "2026.11.151 (25-Nov-2026)"
+    PkgVersion = "2026.11.152 (25-Nov-2026)"
 )
