@@ -26,37 +26,3 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN rm -rf /var/lib/apt/lists/*
 
-
-# Install a modern Go toolchain
-RUN ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') && \
-    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" | tar -C /usr/local -xzf -
-
-
-WORKDIR /app
-COPY go.mod go.sum ./
-RUN go mod download
-
-
-COPY . .
-RUN rm -rf vendor && go mod tidy && go mod vendor
-# Build vendored GLFW v3.4 with X11 only (no Wayland headers or runtime libs)
-RUN if [ -d vendor/github.com/go-gl/glfw/v3.4/glfw ]; then \
-        rm -vf vendor/github.com/go-gl/glfw/v3.4/glfw/c_glfw_lin_wayland.go \
-              vendor/github.com/go-gl/glfw/v3.4/glfw/glfw/src/wl_*.c && \
-        sed -i 's/#define _GLFW_WAYLAND/\/\/ #define _GLFW_WAYLAND/g' \
-            vendor/github.com/go-gl/glfw/v3.4/glfw/glfw/src/platform.h || true; \
-    fi
-# Provide no-op stubs for Wayland symbols so linking succeeds on Buster (libwayland 1.16)
-RUN cp -vf res/c_glfw_lin_wayland.go vendor/github.com/go-gl/glfw/v3.4/glfw/c_glfw_lin_wayland.go
-#build
-ENV CGO_ENABLED=1 GOOS=linux
-RUN ls -la && pwd && go build -v -tags no_wayland,glfw_no_wayland -trimpath -o /out/fyne-app ./cmd/sc
-RUN patchelf --remove-needed "libwayland-client.so.0" /out/fyne-app || true
-RUN patchelf --remove-needed "libwayland-cursor.so.0" /out/fyne-app || true
-RUN patchelf --remove-needed "libwayland-egl.so.0" /out/fyne-app || true
-RUN patchelf --remove-needed "libwayland-egl.so.1" /out/fyne-app || true
-
-
-FROM scratch
-COPY --from=0 /out/fyne-app /fyne-app
-ENTRYPOINT ["/fyne-app"]

@@ -108,36 +108,42 @@ make-upload:
 make-prel-full _MSG: (make-prel-msg _MSG) build-all make-upload
 make-rel-full _MSG: (make-rel-msg _MSG) build-all make-upload
 
-#build-appimage: build-linux
-#    #!/bin/sh
-#    rm -rf {{XDIST}}/AppDir; mkdir -p {{XDIST}}/AppDir
-#    VERSION=$(shtool version -l txt ./version.txt)
-#    cp {{XDIR}}/res/sc.png {{XDIST}}/AppDir/{{CLI}}-linux-amd64.png
-#    cp {{XDIR}}/res/AppRun {{XDIST}}/AppDir/AppRun
-#    chmod uga+rx {{XDIST}}/AppDir/AppRun
-#    {{LXDPLY}} -v0 \
-#        --appdir={{XDIST}}/AppDir \
-#        -e{{XDIST}}/{{CLI}}-linux-amd64 \
-#        --create-desktop-file \
-#        --library=/lib/x86_64-linux-gnu/libGL.so.1 \
-#        --library=/lib/x86_64-linux-gnu/libffi.so.8 \
-#        --library=/lib/x86_64-linux-gnu/libGLdispatch.so.0 \
-#        --library=/lib/x86_64-linux-gnu/libGLX.so.0 \
-#        --library=/lib/x86_64-linux-gnu/libX11.so.6 \
-#        --library=/lib/x86_64-linux-gnu/libxcb.so.1 \
-#        --library=/lib/x86_64-linux-gnu/libXau.so.6 \
-#        --library=/lib/x86_64-linux-gnu/libXdmcp.so.6 \
-#        --library=/lib/x86_64-linux-gnu/libbsd.so.0 \
-#        --library=/lib/x86_64-linux-gnu/libmd.so.0
-#    {{APPIMG}} {{XDIST}}/AppDir {{XDIST}}/{{EXE}}-$VERSION-x86_64-linux.AppImage
-#
-##        --library=/lib/x86_64-linux-gnu/libc.so.6 \
-##        --library=/lib/x86_64-linux-gnu/libm.so.6 \
-##        --library=/lib/x86_64-linux-gnu/libwayland-client.so.0 \
+build-appimage-compat: build-docker-debian9
+    #!/bin/sh
+    cd {{XDIR}}
+    XVERSION=$(shtool version -l txt ./version.txt)
+    XARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+    just -f justfile build-appimage "-glibc-compat" "{{EXE}}-$XVERSION-linux-$XARCH-debian9"
+
+build-appimage-latest: build-docker-arch
+    #!/bin/sh
+    cd {{XDIR}}
+    XVERSION=$(shtool version -l txt ./version.txt)
+    XARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+    just -f justfile build-appimage "-latest" "{{EXE}}-$XVERSION-linux-$XARCH-archlinux"
+
+build-appimage _TAG _BINARY:
+    #!/bin/sh -x
+    APPDIR="{{XDIST}}/AppDir{{_TAG}}"
+    rm -rf $APPDIR; mkdir -p $APPDIR
+    VERSION=$(shtool version -l txt ./version.txt)
+    cp {{XDIR}}/res/sc.png $APPDIR/{{_BINARY}}.png
+    BINARY="{{_BINARY}}" template -o $APPDIR/AppRun {{XDIR}}/res/AppRun
+    chmod uga+rx $APPDIR/AppRun
+    {{LXDPLY}} -v0 \
+        --appdir=$APPDIR \
+        -e{{XDIST}}/{{_BINARY}} \
+        --create-desktop-file
+    {{APPIMG}} $APPDIR {{XDIST}}/{{EXE}}-$VERSION-x86_64-linux{{_TAG}}.AppImage
+    rm -rf $APPDIR
+
 build-all:
     #!/bin/sh
     rm -rf {{XDIST}}; mkdir -p {{XDIST}}
-    cd {{XDIR}} && just -f justfile build-docker build-lnx build-win
+    cd {{XDIR}} && just -f justfile \
+        build-appimage-compat \
+        build-appimage-latest \
+        build-win
 
 build-all-inc:  do-inc-level build-all
 
@@ -227,70 +233,95 @@ build-lnx: update-version-info
       cmd/sc
     cp {{XDIR}}/fyne-cross/bin/linux-amd64/{{CLI}} {{XDIST}}/{{EXE}}-$VERSION-linux-amd64-$OSTAG
 
-render-docker-template _TEMPLATE _VARIANT _IMAGE:
+render-docker-template _TEMPLATE _GTEMPLATE _VARIANT _IMAGE:
     #!/bin/sh -x
     cd {{XDIR}}
     XVERSION=$(shtool version -l txt ./version.txt)
     XARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
-    DOCKERIMAGE="{{_IMAGE}}" template -o docker/Dockerfile.{{_VARIANT}}.TMP docker/Dockerfile.{{_TEMPLATE}}.tmpl
+    DIN={{XDIR}}/docker/Dockerfile.{{_TEMPLATE}}.tmpl
+    GIN={{XDIR}}/docker/Dockerfile.{{_GTEMPLATE}}.tmpl
+    DOUT={{XDIR}}/docker/Dockerfile.{{_VARIANT}}.TMP
+    DOCKERIMAGE="{{_IMAGE}}" template -o $DOUT $DIN
+    cat $GIN >> $DOUT
+
+build-docker-def _IMAGE _TEMPLATE _GTEMPLATE _VARIANT _ALIAS: \
+    (render-docker-template _TEMPLATE _GTEMPLATE _VARIANT _IMAGE) \
+    (build-docker-variant _IMAGE _VARIANT _ALIAS)
+
+build-docker-compat: build-docker-debian9
 
 build-docker-debian9: \
-    (render-docker-template "debian_x11" "debian9" "debian/eol:stretch-slim") \
-    (build-docker-variant "debian9" "compat-glibc-2.24-x11-only")
+    (build-docker-def "debian/eol:stretch-slim" "debian_x11" "golang_x11" "debian9" "compat-glibc-2.24-x11-only")
 
 build-docker-debian10: \
-    (render-docker-template "debian_x11" "debian10" "debian:buster-slim") \
-    (build-docker-variant "debian10" "compat-glibc-2.28-x11-only")
+    (build-docker-def "debian:buster-slim" "debian_x11" "golang_x11" "debian10" "compat-glibc-2.28-x11-only")
 
 build-docker-debian12: \
-    (render-docker-template "debian" "debian12" "debian:bookworm-slim") \
-    (build-docker-variant "debian12" "compat-glibc-2.36")
+    (build-docker-def "debian:bookworm-slim" "debian" "golang" "debian12" "compat-glibc-2.36")
 
 build-docker-debian13: \
-    (render-docker-template "debian" "debian13" "debian:trixie-slim") \
-    (build-docker-variant "debian13" "compat-glibc-2.41")
+    (build-docker-def "debian:trixie-slim" "debian" "golang" "debian13" "compat-glibc-2.41")
 
 build-docker-ubuntu18: \
-    (render-docker-template "ubuntu_x11" "ubuntu18" "ubuntu:bionic") \
-    (build-docker-variant "ubuntu18" "")
+    (build-docker-def "ubuntu:bionic" "ubuntu_x11" "golang_x11" "ubuntu18" "")
 
 build-docker-ubuntu20: \
-    (render-docker-template "ubuntu_x11" "ubuntu20" "ubuntu:focal") \
-    (build-docker-variant "ubuntu20" "")
+    (build-docker-def "ubuntu:focal" "ubuntu_x11" "golang_x11" "ubuntu20" "")
 
 build-docker-ubuntu22: \
-    (render-docker-template "ubuntu" "ubuntu22" "ubuntu:jammy") \
-    (build-docker-variant "ubuntu22" "")
+    (build-docker-def "ubuntu:jammy" "ubuntu" "golang" "ubuntu22" "")
 
 build-docker-ubuntu24: \
-    (render-docker-template "ubuntu" "ubuntu24" "ubuntu:noble") \
-    (build-docker-variant "ubuntu24" "")
+    (build-docker-def "ubuntu:noble" "ubuntu" "golang" "ubuntu24" "")
 
 build-docker-ubuntu26: \
-    (render-docker-template "ubuntu" "ubuntu26" "ubuntu:stonking") \
-    (build-docker-variant "ubuntu26" "")
+    (build-docker-def "ubuntu:stonking" "ubuntu" "golang" "ubuntu26" "")
 
 build-docker-fedora45: \
-    (render-docker-template "rhel" "fedora45" "fedora:45") \
-    (build-docker-variant "fedora45" "")
+    (build-docker-def "fedora:45" "fedora" "golang" "fedora45" "")
 
 build-docker-fedora44: \
-    (render-docker-template "rhel" "fedora44" "fedora:44") \
-    (build-docker-variant "fedora44" "")
+    (build-docker-def "fedora:44" "fedora" "golang" "fedora44" "")
 
 build-docker-fedora43: \
-    (render-docker-template "rhel" "fedora43" "fedora:43") \
-    (build-docker-variant "fedora43" "")
+    (build-docker-def "fedora:43" "fedora" "golang" "fedora43" "")
 
 build-docker-fedora42: \
-    (render-docker-template "rhel" "fedora42" "fedora:42") \
-    (build-docker-variant "fedora42" "")
+    (build-docker-def "fedora:42" "fedora" "golang" "fedora42" "")
 
 build-docker-fedora: \
     build-docker-fedora42 \
     build-docker-fedora43 \
     build-docker-fedora44 \
     build-docker-fedora45
+
+build-docker-alma8: \
+    (build-docker-def "almalinux:8" "rhel" "golang" "almalinux8" "el8-compat")
+
+build-docker-alma9: \
+    (build-docker-def "almalinux:9" "rhel" "golang" "almalinux9" "")
+
+build-docker-alma10: \
+    (build-docker-def "almalinux:10" "rhel" "golang" "almalinux10" "")
+
+build-docker-alma: \
+    build-docker-alma8 \
+    build-docker-alma9 \
+    build-docker-alma10
+
+build-docker-rocky9: \
+    (build-docker-def "rockylinux:9" "rhel" "golang" "rockylinux9" "el9-compat")
+
+build-docker-rocky10: \
+    (build-docker-def "rockylinux:10" "rhel" "golang" "rockylinux10" "el10-compat")
+
+build-docker-rocky: \
+    build-docker-rocky9 \
+    build-docker-rocky10
+
+build-docker-rhel: \
+    build-docker-rocky \
+    build-docker-alma
 
 build-docker-debian: \
     build-docker-debian9 \
@@ -306,18 +337,22 @@ build-docker-ubuntu: \
     build-docker-ubuntu26
 
 build-docker-arch: \
-    (render-docker-template "arch" "archlinux" "archlinux/archlinux") \
-    (build-docker-variant "archlinux" "")
+    (build-docker-def "archlinux/archlinux" "arch" "golang" "archlinux" "")
+
+build-docker-alpine: \
+    (build-docker-def "alpine:latest" "alpine" "golang" "alpinelinux" "musl")
+
 
 build-docker: build-docker-debian build-docker-ubuntu
 
-build-docker-variant _VARIANT _ALIAS:
+build-docker-variant _IMAGE _VARIANT _ALIAS:
     #!/bin/sh
     cd {{XDIR}}
     XVERSION=$(shtool version -l txt ./version.txt)
     XARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
     docker builder prune -f
-    docker build --progress=plain -f docker/Dockerfile.{{_VARIANT}}.TMP -t fyne-oldlinux-{{_VARIANT}} . && \
+    docker image pull "{{_IMAGE}}"
+    docker build --progress=plain -f {{XDIR}}/docker/Dockerfile.{{_VARIANT}}.TMP -t fyne-oldlinux-{{_VARIANT}} . && \
     docker create --name fyne-extract-{{_VARIANT}} fyne-oldlinux-{{_VARIANT}} && \
     docker cp fyne-extract-{{_VARIANT}}:/fyne-app {{XDIST}}/{{EXE}}-$XVERSION-linux-$XARCH-{{_VARIANT}} && \
     docker rm fyne-extract-{{_VARIANT}} && \

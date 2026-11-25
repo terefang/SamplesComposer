@@ -1,0 +1,23 @@
+# syntax=docker/dockerfile:1
+FROM {{ DOCKERIMAGE }}
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV GO_VERSION=1.26.7
+ENV PATH="/usr/local/go/bin:${PATH}"
+
+RUN apk update && apk add --no-cache \
+        ca-certificates \
+        curl tar \
+        gcc \
+        g++ \
+        pkgconf \
+        wayland-dev \
+        mesa-dev \
+        libxkbcommon-dev \
+        libx11-dev \
+        libxcursor-dev \
+        libxrandr-dev \
+        libxinerama-dev \
+        libxi-dev \
+        libxxf86vm-dev
+

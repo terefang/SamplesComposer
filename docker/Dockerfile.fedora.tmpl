@@ -1,0 +1,25 @@
+# syntax=docker/dockerfile:1
+FROM {{ DOCKERIMAGE }}
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV GO_VERSION=1.26.7
+ENV PATH="/usr/local/go/bin:${PATH}"
+
+RUN dnf -y --setopt=tsflags=nodocs install \
+        ca-certificates \
+        curl \
+        gcc \
+        g++ \
+        pkg-config \
+        patchelf \
+        wayland-devel \
+        mesa-libGL-devel \
+        mesa-libEGL-devel \
+        libxkbcommon-devel \
+        libX11-devel \
+        libXcursor-devel \
+        libXrandr-devel \
+        libXinerama-devel \
+        libXi-devel \
+        libXxf86vm-devel
+

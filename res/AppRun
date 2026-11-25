@@ -13,4 +13,4 @@ fi
 
 export LD_LIBRARY_PATH=$(readlink -f "$HERE/usr/lib"):$LD_LIBRARY_PATH
 
-exec "$HERE/usr/bin/sc-linux-amd64" "$@"
+exec "$HERE/usr/bin/{{BINARY}}" "$@"
